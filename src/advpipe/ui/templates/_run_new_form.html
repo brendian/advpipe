@@ -43,6 +43,8 @@
     </label>
     <datalist id="run-config-files">{% for f in config_files %}<option value="{{ f }}"></option>{% endfor %}</datalist>
   </div>
+  {#- Own hx-target and hx-swap: without them this inherits the form's, and every
+      keystroke would replace the whole form with the summary. #}
   <div id="run-summary" hx-post="/runs/new/check" hx-trigger="input delay:400ms from:#run-form"
-       hx-include="#run-form" aria-live="polite">{% include "_run_new_summary.html" %}</div>
+       hx-include="#run-form" hx-target="this" hx-swap="innerHTML" aria-live="polite">{% include "_run_new_summary.html" %}</div>
 </form>
