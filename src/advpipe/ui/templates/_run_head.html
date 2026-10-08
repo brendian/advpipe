@@ -1,0 +1,50 @@
+{% import "_macros.html" as m with context %}
+{#- The run's header: status, cost, branch, and what to do next. While the run is live, it
+    re-fetches itself (and, out of band, the timeline) on `refresh` events from the stream.
+    `delay` (not `throttle`, which drops late triggers) so the last refresh, which shows the
+    final status, always happens. #}
+<section id="run-head" class="run-head"
+  {%- if d.live %} hx-get="/runs/{{ d.run_id }}/body" hx-trigger="sse:refresh delay:300ms" hx-swap="outerHTML"{% endif %}>
+  <h1>{{ d.title }}</h1>
+  <dl class="run-meta">
+    <div><dt>Status</dt><dd><span class="chip chip-{{ d.status }}" title="{{ d.info.help }}">{{ d.info.icon }} {{ d.info.label }}</span></dd></div>
+    <div><dt>Stage</dt><dd>{{ d.stage }}</dd></div>
+    <div><dt>Cost</dt><dd class="cost">
+      ${{ "%.2f" | format(state.cost_usd) }}
+      {%- if d.budget_usd %}<span class="muted"> of ${{ "%.2f" | format(d.budget_usd) }}</span>
+      <meter min="0" max="{{ d.budget_usd }}" value="{{ [state.cost_usd, d.budget_usd] | min }}" high="{{ d.budget_usd * 0.8 }}" title="Cost against the run's budget">{{ "%.0f" | format(100 * state.cost_usd / d.budget_usd) }}%</meter>
+      {%- endif %}
+    </dd></div>
+    <div><dt>Time</dt><dd><time datetime="{{ state.started_at.isoformat() }}" title="Started {{ state.started_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC">{{ d.elapsed }}</time></dd></div>
+    <div class="wide"><dt>Branch</dt><dd>
+      {%- if state.branch %}<code id="branch-name">{{ state.branch }}</code> {{ m.copy_button("branch-name") }}
+      {%- else %}<span class="muted">(not created yet)</span>{% endif %}
+    </dd></div>
+    <div class="wide"><dt>Run id</dt><dd><code>{{ d.run_id }}</code></dd></div>
+  </dl>
+  <p class="status-help">{{ d.info.help }}</p>
+
+  {%- if state.open_findings and not d.live %}
+  <section class="callout">
+    <h2>What's left open</h2>
+    {%- for f in state.open_findings %}
+    {{ m.finding_card(f) }}
+    {%- endfor %}
+  </section>
+  {%- endif %}
+
+  {%- if d.next_steps %}
+  <section class="next-steps">
+    <h2>Next steps</h2>
+    <ol>
+      {%- for s in d.next_steps %}
+      <li>
+        <span>{{ s.label }}</span>
+        <div class="cmd"><code id="cmd-{{ loop.index }}">{{ s.command }}</code> {{ m.copy_button("cmd-" ~ loop.index) }}</div>
+      </li>
+      {%- endfor %}
+    </ol>
+    <p class="muted">advpipe never merges or pushes. These are for you to run.</p>
+  </section>
+  {%- endif %}
+</section>

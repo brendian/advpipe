@@ -179,7 +179,7 @@ base branch, unless `--force` is given. (This is what was done by hand for the t
 Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .`,
 `ruff format --check .` and `mypy --strict src/` green, the README updated, and a commit.
 
-**U0: core support (no UI).** Implement §4.1–4.6, with tests:
+**U0: core support (no UI).** *(done)* Implement §4.1–4.6, with tests:
 - events written and flushed in order, and the CLI output unchanged
 - front-matter parsing, including errors for unknown keys and empty bodies
 - `--item` respects command-line overrides
@@ -188,7 +188,7 @@ Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .
 - `--detach` returns immediately while the run continues (test with the fake runner)
 - `clean` refuses unsafe cases
 
-**U1: UI skeleton and runs list.**
+**U1: UI skeleton and runs list.** *(done)*
 - The `advpipe ui [--repo PATH] [--port 8765] [--items-dir work-items]` command.
 - The app factory `create_ui_app(repo, items_dir, token)`, the token and CSRF middleware, the
   base layout and nav, and vendored htmx plus the SSE extension.
@@ -196,7 +196,7 @@ Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .
 - Tests with `TestClient`, building run directories with `FakeAgentRunner` and the orchestrator,
   as `tests/test_orchestrator.py` does.
 
-**U2: run detail and live log.**
+**U2: run detail and live log.** *(done)*
 - The timeline built from `run.json` and the round directories, and the round panels (author
   reply, diff, checks, verdict cards).
 - The rendered report, and the next-steps commands with copy buttons.

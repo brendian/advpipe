@@ -7,9 +7,11 @@
   <meta name="htmx-config"
         content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false, "selfRequestsOnly": true, "historyCacheSize": 0}'>
   <title>{% block title %}advpipe{% endblock %} · {{ repo_name }}</title>
+  <link rel="icon" href="data:,">{# no favicon request #}
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/htmx-ext-sse.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
 </head>
 {#- htmx sends the CSRF token with every request it makes. #}
 <body hx-headers='{{ {"X-CSRF-Token": csrf_token} | tojson }}'>

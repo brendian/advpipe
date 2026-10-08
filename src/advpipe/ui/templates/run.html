@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ d.title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/">← All runs</a></p>
+{#- While the run is live, one SSE connection feeds the log and tells the header and timeline
+    when to refresh; it closes on the stream's `end` event. #}
+<div id="run"{% if d.live %} hx-ext="sse" sse-connect="/runs/{{ d.run_id }}/events?offset={{ offset }}" sse-close="end"{% endif %}>
+  {% include "_run_head.html" %}
+
+  <details class="log-panel" id="log-panel"{% if d.live %} open{% endif %}>
+    <summary><strong>{{ "Live log" if d.live else "Log" }}</strong> <span class="muted">· {% if d.live %}new lines appear as they happen{% else %}{{ events | length }} event(s){% endif %}</span></summary>
+    <ol id="log" class="log"{% if d.live %} sse-swap="log" hx-swap="beforeend"{% endif %}>
+      {%- for e in events %}
+      {{ e }}
+      {%- endfor %}
+    </ol>
+    {%- if not events %}
+    <p class="muted">No events recorded{% if d.live %} yet{% endif %}.</p>
+    {%- endif %}
+  </details>
+
+  {% include "_run_main.html" %}
+</div>
+{% endblock %}

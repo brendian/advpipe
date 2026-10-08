@@ -1,0 +1,58 @@
+{% import "_macros.html" as m with context %}
+{#- Timeline and report. Rendered in the page, and out of band (oob) in /runs/<id>/body. #}
+<section id="run-main"{% if oob | default(false) %} hx-swap-oob="true"{% endif %}>
+  <h2>Timeline</h2>
+  <ol class="timeline">
+    {%- for step in d.timeline %}
+    <li class="step step-{{ step.state }}">
+      <a href="#step-{{ step.stage.value }}" title="{{ step.state_help }}">
+        <span class="step-label">{{ step.label }}</span>
+        <span class="step-state">{{ step.state_label }}</span>
+        {%- if step.summary %}<span class="step-summary">{{ step.summary }}</span>{% endif %}
+      </a>
+    </li>
+    {%- endfor %}
+  </ol>
+
+  {%- for step in d.timeline if step.has_content or step.state in ("current", "stopped") %}
+  {%- set open = step.state in ("current", "stopped") %}
+  <details class="step-panel step-{{ step.state }}" id="step-{{ step.stage.value }}"{% if open %} open{% endif %}>
+    <summary><strong>{{ step.label }}</strong> <span class="tag">{{ step.state_label }}</span>{% if step.summary %} <span class="muted">· {{ step.summary }}</span>{% endif %}</summary>
+    <div class="step-body">
+      {%- if step.task_md is not none %}
+      <details class="reply" id="step-{{ step.stage.value }}-task">
+        <summary><code>task.md</code>: the spec everything else is built from</summary>
+        <div class="prose">{{ step.task_md | safe }}</div>
+      </details>
+      {%- endif %}
+      {%- if step.rulings %}
+      <table class="rulings">
+        <thead><tr><th scope="col">Finding</th><th scope="col">Ruling</th><th scope="col">Reason</th></tr></thead>
+        <tbody>
+          {%- for r in step.rulings %}
+          <tr><td><code>{{ r.finding_id }}</code></td><td><span class="tag {{ 'tag-fail' if r.decision == 'fix' else '' }}">{{ r.decision }}</span></td><td>{{ r.reason }}</td></tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+      {%- endif %}
+      {%- for r in step.rounds %}
+      {{ m.round_panel(r, "step-" ~ step.stage.value ~ "-r" ~ loop.index, open and loop.last) }}
+      {%- endfor %}
+      {%- if not step.has_content %}
+      <p class="muted">Nothing recorded for this step yet.</p>
+      {%- endif %}
+    </div>
+  </details>
+  {%- endfor %}
+
+  <section class="report">
+    <h2>Report</h2>
+    {%- if d.live %}
+    <p class="muted">The report is written when the run finishes.</p>
+    {%- elif d.report is not none %}
+    <div class="prose">{{ d.report | safe }}</div>
+    {%- else %}
+    <p class="muted">This run has no <code>report.md</code>.</p>
+    {%- endif %}
+  </section>
+</section>
