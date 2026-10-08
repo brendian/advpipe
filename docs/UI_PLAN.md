@@ -251,12 +251,12 @@ highlighting, and editing a run's `task.md` before tests start (a "pause after s
 
 ## 8. Open questions (for Brendan, before U4/U5)
 
-- **Should saving a work item commit it to git?** Proposed: no. Show "uncommitted" in the list
+- **Should saving a work item commit it to git?** Proposed: no. **BRENDAN AGREES WITH PROPOSED, NO** Show "uncommitted" in the list
   and leave committing to you, as the pipeline never commits on your branches.
 - **One repo per UI, or several?** Proposed: one repo per `advpipe ui` process (`--repo`).
-  Several can run on different ports.
+  Several can run on different ports. -Brendan says one repo per
 - **Should other people on the network use it?** Proposed: no. If that's wanted later, put it
-  behind Tailscale with real accounts. That's a separate project.
+  behind Tailscale with real accounts. That's a separate project. -Brendan says no
 
 ## How to use this plan in a session
 
