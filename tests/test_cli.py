@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
 from fakes import FakeAgentRunner, happy_scripts
@@ -47,3 +49,29 @@ def test_run_requires_exactly_one_source(tmp_path: Path) -> None:
 def test_resume_refusal_exit_code(target_repo: Path) -> None:
     result = cli.invoke(app, ["resume", "nope", "--repo", str(target_repo)])
     assert result.exit_code == 2
+
+
+def test_gates_command(tmp_path: Path) -> None:
+    ok, bad = "import sys; sys.exit(0)", "import sys; print('boom'); sys.exit(1)"
+    (tmp_path / "pipeline.toml").write_text(
+        f'[gates]\ntest = ["{sys.executable}", "-c", "{ok}"]\n'
+        f'lint = ["{sys.executable}", "-c", "{bad}"]\ntypes = []\n'
+    )
+    passing = cli.invoke(app, ["gates", "--repo", str(tmp_path), "--only", "test,types"])
+    assert passing.exit_code == 0
+    assert "test: pass" in passing.output and "types: skipped" in passing.output
+
+    failing = cli.invoke(app, ["gates", "--repo", str(tmp_path)])
+    assert failing.exit_code == 2
+    assert "lint: FAIL" in failing.stderr and "boom" in failing.stderr
+
+    assert cli.invoke(app, ["gates", "--repo", str(tmp_path), "--only", "nope"]).exit_code != 0
+
+
+def test_example_hook_config_is_valid() -> None:
+    hooks = json.loads(
+        (Path(__file__).parent.parent / "examples" / "claude-hooks.json").read_text()
+    )
+    (entry,) = hooks["hooks"]["PostToolUse"]
+    assert "Edit" in entry["matcher"]
+    assert entry["hooks"][0]["command"].startswith("advpipe gates")

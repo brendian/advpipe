@@ -14,16 +14,22 @@ class BudgetExceeded(Exception):
 
 class Budget:
     def __init__(
-        self, limit_usd: float, spent_usd: float = 0.0, by_stage: dict[str, float] | None = None
+        self,
+        limit_usd: float,
+        spent_usd: float = 0.0,
+        by_stage: dict[str, float] | None = None,
+        calls_by_stage: dict[str, int] | None = None,
     ) -> None:
         self.limit = limit_usd
         self.spent = spent_usd
         self.by_stage: defaultdict[str, float] = defaultdict(float, by_stage or {})
+        self.calls_by_stage: defaultdict[str, int] = defaultdict(int, calls_by_stage or {})
 
     def add(self, cost_usd: float, stage: str = "") -> None:
         """Record a cost. Raises BudgetExceeded as soon as the limit is crossed."""
         self.spent += cost_usd
         self.by_stage[stage] += cost_usd
+        self.calls_by_stage[stage] += 1
         if self.spent > self.limit:
             raise BudgetExceeded(self.spent, self.limit)
 

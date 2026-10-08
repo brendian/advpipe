@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "advpipe gates --repo \"$CLAUDE_PROJECT_DIR\" --only types,lint",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

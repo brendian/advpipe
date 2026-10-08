@@ -113,7 +113,20 @@ def _finding_lines(findings: list[Finding]) -> list[str]:
     return out
 
 
-def render_report(state: RunState, cost_by_stage: dict[str, float]) -> str:
+def _cost_table(state: RunState) -> list[str]:
+    if not state.cost_by_stage:
+        return ["- None"]
+    total = sum(state.cost_by_stage.values())
+    rows = ["| Stage | Agent calls | Cost | Share |", "|---|---:|---:|---:|"]
+    for stage, cost in state.cost_by_stage.items():
+        share = f"{cost / total:.0%}" if total else "-"
+        rows.append(f"| {stage} | {state.calls_by_stage.get(stage, 0)} | ${cost:.2f} | {share} |")
+    calls = sum(state.calls_by_stage.values())
+    rows.append(f"| **total** | **{calls}** | **${total:.2f}** | |")
+    return rows
+
+
+def render_report(state: RunState) -> str:
     elapsed = (state.updated_at - state.started_at).total_seconds()
     lines = [
         f"# advpipe run {state.run_id}",
@@ -143,7 +156,7 @@ def render_report(state: RunState, cost_by_stage: dict[str, float]) -> str:
         *([f"- {r.finding_id}: **{r.decision}**: {r.reason}" for r in state.rulings] or ["- None"]),
         "",
         "## Cost by stage",
-        *([f"- {k}: ${v:.2f}" for k, v in cost_by_stage.items()] or ["- None"]),
+        *_cost_table(state),
         "",
         "## Notes",
         *([f"- {n}" for n in state.notes] or ["- None"]),

@@ -21,6 +21,9 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'   # or: uv sync
 - `tests/`: own tests. `tests/fakes.py` scripts agent responses, so no API calls are made.
 - `tests/fixtures/sample_repo/`: tiny target project for tests and dry runs. Don't modify it in
   place; copy it first.
+- `docs/ARCHITECTURE.md`: how it works. `README.md`: public usage guide. Update both when
+  behaviour or CLI changes.
+- `examples/claude-hooks.json`: optional PostToolUse hook running `advpipe gates`.
 
 ## Design rules (do not drop these)
 

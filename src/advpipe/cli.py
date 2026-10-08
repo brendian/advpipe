@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from advpipe.config import load_config
+from advpipe.gates import run_gates
 from advpipe.models import RunState, Status
 from advpipe.orchestrator import NotResumable, Orchestrator, run_many
 from advpipe.runlog import RunLog, list_runs
@@ -151,3 +152,32 @@ def report(run_id: str, repo: RepoOpt = Path(".")) -> None:
         typer.echo(f"no report for run {run_id}", err=True)
         raise typer.Exit(code=2)
     typer.echo(path.read_text(), nl=False)
+
+
+GATE_NAMES = ("test", "types", "lint", "security")
+
+
+@app.command()
+def gates(
+    repo: RepoOpt = Path("."),
+    config: ConfigOpt = None,
+    only: Annotated[
+        str, typer.Option(help="Comma-separated gates to run: test, types, lint, security.")
+    ] = "test,types,lint",
+) -> None:
+    """Run the configured gates once. Exits 2 on failure (for use as a Claude Code hook)."""
+    names = [n.strip() for n in only.split(",") if n.strip()]
+    unknown = [n for n in names if n not in GATE_NAMES]
+    if unknown:
+        raise typer.BadParameter(f"unknown gate(s): {', '.join(unknown)}")
+    cfg = load_config(config, repo)
+    results = asyncio.run(run_gates(cfg, repo.resolve(), names))
+    failed = [r for r in results if not r.passed]
+    for r in results:
+        if r.passed:
+            typer.echo(f"{r.name}: {'skipped (' + r.skip_reason + ')' if r.skipped else 'pass'}")
+    # Failures go to stderr: a PostToolUse hook exiting 2 feeds stderr back to Claude.
+    for r in failed:
+        typer.echo(r.summary(), err=True)
+    if failed:
+        raise typer.Exit(code=2)

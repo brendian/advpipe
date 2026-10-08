@@ -69,7 +69,10 @@ class Orchestrator:
         self.run_id = self.state.run_id
         self.runlog = RunLog.for_run(self.repo, self.run_id)
         self.budget = Budget(
-            config.limits.budget_usd_per_task, self.state.cost_usd, self.state.cost_by_stage
+            config.limits.budget_usd_per_task,
+            self.state.cost_usd,
+            self.state.cost_by_stage,
+            self.state.calls_by_stage,
         )
         self.ctx: Context | None = None
 
@@ -118,8 +121,9 @@ class Orchestrator:
         finally:
             self.state.cost_usd = self.budget.spent
             self.state.cost_by_stage = dict(self.budget.by_stage)
+            self.state.calls_by_stage = dict(self.budget.calls_by_stage)
             self.runlog.write_state(self.state)
-            self.runlog.write_text("report.md", render_report(self.state, self.state.cost_by_stage))
+            self.runlog.write_text("report.md", render_report(self.state))
             self.runlog.release_lock()
         return self.state
 

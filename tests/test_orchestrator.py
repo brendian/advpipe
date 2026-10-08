@@ -337,3 +337,11 @@ async def test_worktree_kept_when_not_complete(config: Config, target_repo: Path
     state, _ = await run(config, target_repo, FakeAgentRunner(scripts))
     assert state.status is Status.NEEDS_HUMAN
     assert Path(state.worktree).is_dir() and not state.worktree_removed
+
+
+async def test_report_has_cost_table(config: Config, target_repo: Path) -> None:
+    state, logdir = await run(config, target_repo, FakeAgentRunner(happy_scripts()))
+    assert state.calls_by_stage == {"spec": 1, "stage-tests": 2, "stage-code": 2, "review": 2}
+    report = (logdir / "report.md").read_text()
+    assert "| review | 2 | $0.02 | 29% |" in report
+    assert "| **total** | **7** | **$0.07** | |" in report

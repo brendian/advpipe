@@ -65,6 +65,7 @@ class Context:
     def save(self) -> None:
         self.state.cost_usd = self.budget.spent
         self.state.cost_by_stage = dict(self.budget.by_stage)
+        self.state.calls_by_stage = dict(self.budget.calls_by_stage)
         self.runlog.write_state(self.state)
 
 

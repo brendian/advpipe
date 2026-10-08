@@ -152,6 +152,7 @@ class RunState(BaseModel):
     # A resumed run skips every stage listed here.
     commits: dict[str, str] = Field(default_factory=dict)
     cost_by_stage: dict[str, float] = Field(default_factory=dict)
+    calls_by_stage: dict[str, int] = Field(default_factory=dict)
     worktree_removed: bool = False
     notes: list[str] = Field(default_factory=list)
     noise_dropped: int = 0
