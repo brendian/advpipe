@@ -17,10 +17,12 @@ from markupsafe import Markup
 from pydantic import ValidationError
 
 from advpipe.config import Config
+from advpipe.control import CONSOLE_LOG
 from advpipe.gates import GateResult
 from advpipe.models import RESUMABLE, ArbiterRuling, Ruling, RunState, Stage, Status, Verdict
 from advpipe.runlog import RunLog
 from advpipe.stages import parse_model
+from advpipe.ui.actions import VALID, suggested_budget
 from advpipe.ui.render import markdown
 from advpipe.ui.runs import (
     STAGE_LABELS,
@@ -182,6 +184,15 @@ class RunDetail:
     @property
     def live(self) -> bool:
         return self.status == "running"
+
+    @property
+    def actions(self) -> frozenset[str]:
+        """The buttons to show: cancel, resume, clean (see ui.actions.VALID)."""
+        return VALID.get(self.status, frozenset())
+
+    @property
+    def suggested_budget(self) -> float:
+        return suggested_budget(self.state.cost_usd, self.budget_usd)
 
     @property
     def elapsed(self) -> str:
@@ -483,7 +494,7 @@ def next_steps(state: RunState, status: str, repo: Path, budget: float | None) -
             steps.append(NextStep("Finish it by hand in its working copy", f"cd {q(worktree)}"))
         steps.append(clean)
     elif status == "budget_exceeded":
-        more = f"{max(budget * 2, state.cost_usd + 5):.0f}" if budget else "30"
+        more = f"{suggested_budget(state.cost_usd, budget):.0f}"
         steps.append(
             NextStep(
                 "Continue with a bigger budget",
@@ -528,3 +539,28 @@ def load_detail(repo: Path, run_id: str) -> RunDetail | None:
         report=markdown(report) if report is not None else None,
         next_steps=next_steps(state, status, repo, budget),
     )
+
+
+# --------------------------------------------------------------------------- a run starting up
+
+CONSOLE_TAIL_LINES = 60
+
+
+@dataclass(frozen=True)
+class Starting:
+    """A run directory without run.json yet: a background run that's starting up, or one
+    that failed before it got going (its console.log says why)."""
+
+    run_id: str
+    alive: bool
+    console: str  # the end of console.log
+
+
+def load_starting(repo: Path, run_id: str) -> Starting | None:
+    """The starting-up view of ``run_id``, or None if it has a run.json (or doesn't exist)."""
+    log = RunLog.for_run(repo, run_id)
+    if not log.root.is_dir() or (log.root / "run.json").is_file():
+        return None
+    console = read_text(log.root / CONSOLE_LOG) or ""
+    tail = "\n".join(console.splitlines()[-CONSOLE_TAIL_LINES:])
+    return Starting(run_id, log.lock_holder() is not None, tail)

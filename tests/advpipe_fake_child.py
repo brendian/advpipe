@@ -5,6 +5,9 @@ Tests point `advpipe.control.child_command` at this script. Environment:
 - ADVPIPE_FAKE_BLOCK=<role>: that role's call waits until the file named by
   ADVPIPE_FAKE_RELEASE exists (forever if it's unset), so a test can catch the run mid-way.
 
+Runs it detaches (`run --detach` / `resume --detach` started as a subprocess, as the web UI
+does) use this script too, never the real agent runner.
+
 The file name contains "advpipe" so `advpipe cancel` recognises the process as advpipe's.
 """
 
@@ -20,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fakes import FakeAgentRunner, happy_scripts  # noqa: E402
 
 import advpipe.cli as cli  # noqa: E402
+import advpipe.control as control  # noqa: E402
 from advpipe.runner import AgentRequest, AgentResult  # noqa: E402
 
 
@@ -33,4 +37,5 @@ class BlockingRunner(FakeAgentRunner):
 
 
 cli.SdkAgentRunner = lambda: BlockingRunner(happy_scripts())  # type: ignore[assignment,misc]
+control.child_command = lambda: [sys.executable, str(Path(__file__).resolve())]
 cli.app(prog_name="advpipe")

@@ -1,0 +1,16 @@
+{#- While the process is alive, this re-fetches itself each second; once run.json exists the
+    server answers with HX-Refresh and the page shows the run. #}
+<section id="run-starting"
+  {%- if s.alive %} hx-get="/runs/{{ s.run_id }}/starting" hx-trigger="every 1s" hx-swap="outerHTML"{% endif %}>
+  {%- if s.alive %}
+  <p>Starting up: making its working copy and branch. This page shows the run as soon as it begins.</p>
+  {%- else %}
+  <p class="warning">It stopped before it got going, so there's no run to show. Its output is below.
+    Once you've fixed the problem, start it again from <a href="/runs/new">New run</a>.</p>
+  {%- endif %}
+  {%- if s.console %}
+  <pre class="console">{{ s.console }}</pre>
+  {%- elif not s.alive %}
+  <p class="muted">It wrote no output (<code>console.log</code> is empty or missing).</p>
+  {%- endif %}
+</section>

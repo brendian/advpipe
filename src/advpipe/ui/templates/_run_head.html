@@ -24,6 +24,32 @@
   </dl>
   <p class="status-help">{{ d.info.help }}</p>
 
+  {%- if d.actions %}
+  {#- Only the actions valid for this status; the server checks again. Problems come back
+      into #action-result (409 or 422). #}
+  <section class="run-actions" aria-label="Actions">
+    {%- if "cancel" in d.actions %}
+    <button type="button" class="button" hx-post="/runs/{{ d.run_id }}/cancel" hx-target="#action-result"
+            hx-confirm="Stop this run at its next safe point? You can resume it later.">Cancel run</button>
+    {%- endif %}
+    {%- if "resume" in d.actions %}
+    {%- set over = d.status == "budget_exceeded" %}
+    <form class="inline-form" hx-post="/runs/{{ d.run_id }}/resume" hx-target="#action-result">
+      <label>{{ "New budget" if over else "Budget" }} $<input name="budget" inputmode="decimal" size="7" maxlength="20" autocomplete="off"
+             {%- if over %} value="{{ '%.0f' | format(d.suggested_budget) }}" required{% elif d.budget_usd %} placeholder="{{ '%.2f' | format(d.budget_usd) }}"{% endif %}></label>
+      <button type="submit" class="button primary">Resume</button>
+      <small class="muted">The total for the run: it has spent ${{ "%.2f" | format(state.cost_usd) }}
+        {%- if over %} and ran out, so it needs more to continue{% elif d.budget_usd %} of ${{ "%.2f" | format(d.budget_usd) }}. Empty keeps that{% endif %}.
+        Resuming carries on in the background.</small>
+    </form>
+    {%- endif %}
+    {%- if "clean" in d.actions %}
+    <a class="button" href="/runs/{{ d.run_id }}/clean">Clean up…</a>
+    {%- endif %}
+    <div id="action-result" aria-live="polite"></div>
+  </section>
+  {%- endif %}
+
   {%- if state.open_findings and not d.live %}
   <section class="callout">
     <h2>What's left open</h2>

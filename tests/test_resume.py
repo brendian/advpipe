@@ -98,6 +98,8 @@ async def test_resume_after_budget_exceeded_with_new_budget(
     assert state.status is Status.COMPLETE, state.notes
     assert state.cost_usd == pytest.approx(6.06)
     assert state.cost_by_stage["spec"] == pytest.approx(2.0)
+    saved = RunLog.for_run(target_repo, "r1").read_config()
+    assert saved is not None and saved.limits.budget_usd_per_task == 20.0  # what it ran under
 
 
 async def test_resume_refuses_finished_run(config: Config, target_repo: Path) -> None:

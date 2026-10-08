@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{#- Cleaning up asks first: this page is the question, and only its form sends confirm=yes. #}
+{% block title %}Clean up {{ run_id }}?{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/runs/{{ run_id }}">← Back to the run</a></p>
+<h1>Clean up run <code>{{ run_id }}</code>?</h1>
+<p>This throws away what the run made, so it no longer clutters your repo:</p>
+<ul>
+  {%- if info.worktree %}
+  <li>its working copy <code>{{ info.worktree }}</code></li>
+  {%- endif %}
+  {%- if info.branch %}
+  <li>its branch <code>{{ info.branch }}</code>
+    {%- if info.unmerged %}, with <strong>{{ info.unmerged }} commit{{ "s" if info.unmerged != 1 }}</strong> that no other branch has{% endif %}</li>
+  {%- endif %}
+  {%- if not info.worktree and not info.branch %}
+  <li class="muted">nothing: its working copy and branch are already gone. You can still delete its log.</li>
+  {%- endif %}
+</ul>
+{%- if info.branch and info.unmerged is none %}
+<p class="warning">Couldn't tell whether its branch has commits no other branch has. If it does, cleaning up refuses unless you tick “delete them anyway”.</p>
+{%- endif %}
+<form class="item-form" method="post" action="/runs/{{ run_id }}/clean" hx-post="/runs/{{ run_id }}/clean" hx-target="#action-result">
+  <input type="hidden" name="confirm" value="yes">
+  {%- if info.branch and info.unmerged != 0 %}
+  <label class="choice"><input type="checkbox" name="force" value="yes">
+    Delete its commits anyway. They can't be got back afterwards
+    {%- if state.base_commit %}; look at them first with <code>git log --oneline {{ state.base_commit[:12] }}..{{ info.branch }}</code>{% endif %}.</label>
+  {%- endif %}
+  <label class="choice"><input type="checkbox" name="logs" value="yes">
+    Also delete its log (<code>.advpipe/runs/{{ run_id }}/</code>), so it leaves the runs list.</label>
+  <div id="action-result" aria-live="polite"></div>
+  <div class="form-actions">
+    <button type="submit" class="button danger">Clean it up</button>
+    <a href="/runs/{{ run_id }}">Keep it</a>
+  </div>
+</form>
+{% endblock %}

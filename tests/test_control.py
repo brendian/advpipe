@@ -137,6 +137,48 @@ def test_cancel_leaves_a_resumable_run(target_repo: Path, detachable: Path) -> N
     assert asyncio.run(resumed.run()).status is Status.COMPLETE
 
 
+def test_resume_detach_continues_in_the_background(target_repo: Path, detachable: Path) -> None:
+    runlog = start(target_repo, "add clamp")
+    wait_for(lambda: "coder working" in events_text(runlog))
+    run_id = runlog.root.name
+    assert cli.invoke(app, ["cancel", run_id, "--repo", str(target_repo)]).exit_code == 0
+    wait_for(lambda: runlog.lock_holder() is None)
+
+    detachable.touch()
+    started = time.monotonic()
+    result = cli.invoke(
+        app, ["resume", run_id, "--repo", str(target_repo), "--detach", "--budget", "12.5"]
+    )
+    assert result.exit_code == 0, result.output
+    assert time.monotonic() - started < 10 and result.stdout.strip() == run_id
+    assert "resumed in the background" in result.stderr
+    assert runlog.lock_holder() is not None  # the child's pid, straight away
+    wait_for(lambda: runlog.lock_holder() is None)
+    state = runlog.read_state()
+    assert state.status is Status.COMPLETE, state.notes
+    config = runlog.read_config()
+    assert config is not None and config.limits.budget_usd_per_task == 12.5  # --budget passed on
+
+
+def test_resume_detach_refuses_before_starting_anything(target_repo: Path) -> None:
+    runlog = RunLog.for_run(target_repo, "r1")
+    runlog.write_state(
+        RunState(run_id="r1", repo=str(target_repo), work_item="x", status=Status.COMPLETE)
+    )
+    result = cli.invoke(app, ["resume", "r1", "--repo", str(target_repo), "--detach"])
+    assert result.exit_code == 2 and "nothing to resume" in result.stderr
+    assert not (runlog.root / "console.log").exists()
+
+    # A live process holds the lock: refused, even when it's this one (only the detached child
+    # itself, told so with the hidden --detached-child, accepts its own pid in run.lock).
+    runlog.write_state(
+        RunState(run_id="r1", repo=str(target_repo), work_item="x", status=Status.ERROR)
+    )
+    runlog.acquire_lock(os.getpid())
+    result = cli.invoke(app, ["resume", "r1", "--repo", str(target_repo), "--detach"])
+    assert result.exit_code == 2 and "still being driven" in result.stderr
+
+
 def test_cancel_unknown_run(target_repo: Path) -> None:
     result = cli.invoke(app, ["cancel", "nope", "--repo", str(target_repo)])
     assert result.exit_code == 2 and "no run nope" in result.stderr

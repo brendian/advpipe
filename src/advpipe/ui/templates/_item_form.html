@@ -41,6 +41,7 @@
   </div>
   <div class="form-actions">
     <button type="submit" class="button primary">{{ "Create" if new else "Save" }}</button>
+    <button type="submit" class="button" name="then" value="run" title="Save, then check the budget and start a run">{{ "Create" if new else "Save" }} &amp; run…</button>
     <a href="/items">Cancel</a>
     <span class="muted small">Saving writes the file only. Nothing is committed.</span>
   </div>

@@ -149,7 +149,12 @@ def new_item_page(request: Request, folder: str = "") -> HTMLResponse:
 
 @router.post("/items/new")
 def create_item(
-    request: Request, path: Short, body: Field, name: Short = "", config: Short = ""
+    request: Request,
+    path: Short,
+    body: Field,
+    name: Short = "",
+    config: Short = "",
+    then: Short = "",
 ) -> Response:
     ui = ui_config(request)
     draft = items.from_form(items.with_suffix(path) if path.strip() else "", name, config, body)
@@ -165,6 +170,8 @@ def create_item(
         return _editor(request, draft, new=True, errors=[message], fragment=True)
     except (WorkItemError, OSError) as e:
         return _editor(request, draft, new=True, errors=[str(e)], fragment=True)
+    if then == "run":
+        return _redirect("/runs/new", item=draft.rel)
     return _redirect("/items/edit", path=draft.rel, notice="created")
 
 
@@ -198,6 +205,7 @@ def save_item(
     base: Short = "",
     name: Short = "",
     config: Short = "",
+    then: Short = "",
 ) -> Response:
     ui = ui_config(request)
     draft = items.from_form(path, name, config, body, base)
@@ -230,6 +238,8 @@ def save_item(
         )
     except (WorkItemError, OSError) as e:
         return _editor(request, draft, new=False, errors=[str(e)], fragment=True)
+    if then == "run":  # "Save & run": the New run dialog shows the budget before starting
+        return _redirect("/runs/new", item=path)
     return _redirect("/items/edit", path=path, notice="saved" if changed else "unchanged")
 
 

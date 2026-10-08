@@ -65,6 +65,7 @@
           {%- endif %}
         </td>
         <td class="actions">
+          {%- if not row.problem %}<a href="/runs/new?{{ {'item': row.rel} | urlencode }}">Run</a>{% endif %}
           <a href="/items/edit?{{ q }}">Edit</a>
           <a href="/items/rename?{{ q }}">Rename</a>
           <a href="/items/delete?{{ q }}" class="danger-link">Delete</a>

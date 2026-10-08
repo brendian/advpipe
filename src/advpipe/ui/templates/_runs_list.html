@@ -12,7 +12,7 @@
   {% if rows %}
   <table class="runs-table">
     <thead>
-      <tr><th scope="col">Status</th><th scope="col">Work item</th><th scope="col">Stage</th><th scope="col">Cost</th><th scope="col">Started</th></tr>
+      <tr><th scope="col">Status</th><th scope="col">Work item</th><th scope="col">Stage</th><th scope="col">Cost</th><th scope="col">Started</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
     </thead>
     <tbody>
       {% for row in rows %}
@@ -27,6 +27,9 @@
           ${{ "%.2f" | format(row.cost_usd) }}{% if row.status == "running" and row.budget_usd is not none %}<span class="muted"> / ${{ "%.2f" | format(row.budget_usd) }}</span>{% endif %}
         </td>
         <td><time datetime="{{ row.started_at.isoformat() }}" title="{{ row.started_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC">{{ row.age }}</time></td>
+        <td class="actions">
+          {%- if "clean" in valid[row.status] %}<a href="/runs/{{ row.run_id }}/clean" title="Remove this run's working copy and branch">Clean up</a>{% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -36,7 +39,7 @@
   {% else %}
   <div class="empty">
     <p>No runs yet in <code>{{ repo }}</code>.</p>
-    <p>Start one from a terminal, and it shows up here by itself:</p>
+    <p><a href="/runs/new">Start a run</a>, or start one from a terminal and it shows up here by itself:</p>
     <pre><code>advpipe run --repo {{ repo_arg }} --item work-items/my-task.md</code></pre>
   </div>
   {% endif %}

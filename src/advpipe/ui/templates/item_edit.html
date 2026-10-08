@@ -33,7 +33,11 @@
 {%- if command %}
 <section class="next-steps">
   <h2>Run it</h2>
-  <p class="muted">Starting runs from this page comes in a later version. For now, from a terminal:</p>
+  {%- if not draft.problem %}
+  <p><a class="button" href="/runs/new?{{ {'item': draft.rel} | urlencode }}">Run…</a>
+    <span class="muted">Shows what it can spend before it starts.</span></p>
+  {%- endif %}
+  <p class="muted">Or from a terminal:</p>
   <div class="cmd"><code id="run-cmd">{{ command }}</code> {{ m.copy_button("run-cmd") }}</div>
 </section>
 {%- endif %}

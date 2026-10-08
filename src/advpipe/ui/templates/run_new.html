@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{#- The New run dialog. Starting a run spends money, so the page says how much it can spend
+    before the Start button does anything. #}
+{% block title %}New run{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/">← All runs</a></p>
+<h1>New run</h1>
+<p class="lead">Pick a work item (or type a one-off task), check the settings, and start. The run
+  goes on in the background: closing this page or the UI doesn't stop it.</p>
+{% include "_run_new_form.html" %}
+{% endblock %}
