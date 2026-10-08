@@ -14,6 +14,9 @@ each part, and why it's built that way. For installing and using the tool, see t
 - [Talking to Claude](#talking-to-claude)
 - [Isolation: worktrees and branches](#isolation-worktrees-and-branches)
 - [Persistence, resume and locking](#persistence-resume-and-locking)
+- [Progress events](#progress-events)
+- [Background runs, cancel and clean](#background-runs-cancel-and-clean)
+- [Work-item files](#work-item-files)
 - [Parallel runs](#parallel-runs)
 - [Budget](#budget)
 - [The Claude Code version](#the-claude-code-version-no-python)
@@ -72,7 +75,7 @@ All code is in `src/advpipe/`.
 
 | File | Responsibility | Key names |
 |---|---|---|
-| `cli.py` | Typer CLI: `run`, `resume`, `status`, `report`, `gates` | `run`, `resume`, `status`, `report`, `gates` |
+| `cli.py` | Typer CLI: `run`, `resume`, `cancel`, `clean`, `status`, `report`, `gates` | `run`, `resume`, `cancel`, `clean`, `status`, `report`, `gates` |
 | `orchestrator.py` | The state machine; resume; parallel runs | `Orchestrator`, `Orchestrator._run`, `Orchestrator._settle`, `Orchestrator.resume`, `run_many` |
 | `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `test_file_guard`, `Context` |
 | `models.py` | Pydantic data contracts and validation rules | `Finding`, `Verdict`, `AuthorResponse`, `ArbiterRuling`, `RunState`, `Stage`, `Status` |
@@ -80,7 +83,10 @@ All code is in `src/advpipe/`.
 | `gates.py` | Runs check commands; turns failures into findings | `run_gates`, `gate_findings`, `red_gate_findings`, `GateResult` |
 | `workspace.py` | Git worktree per run; diffs; reverting files | `Workspace.create`, `.reopen`, `.remove`, `.diff`, `.changed_files`, `.restore` |
 | `budget.py` | Cost tracking with a hard stop | `Budget`, `BudgetExceeded` |
-| `runlog.py` | The on-disk run directory, lock file and `report.md` | `RunLog`, `render_report`, `list_runs` |
+| `runlog.py` | The on-disk run directory, lock file, event log and `report.md`; run-id validation | `RunLog`, `check_run_id`, `render_report`, `list_runs` |
+| `events.py` | One `emit()` for progress: appends to `events.jsonl` and prints | `emit`, `EventKind`, `gate_statuses` |
+| `control.py` | Acting on runs from outside: detached start, cancel, clean | `start_detached`, `cancel_run`, `clean_run`, `ControlError` |
+| `workitem.py` | Work-item files with optional front matter | `parse_work_item`, `load_work_item`, `WorkItem` |
 | `config.py` | `pipeline.toml` loading and validation | `Config`, `load_config` |
 | `prompts/*.md` | One system prompt per role. **Source of truth** for agent behaviour. | |
 
@@ -322,12 +328,14 @@ It returns the final text plus `total_cost_usd` from the SDK's `ResultMessage`.
 
 ```
 run.json        RunState, rewritten at every transition and after every agent call
+events.jsonl    every progress event, one JSON object per line (see below)
+console.log     stdout and stderr of a run started with --detach
 config.json     the config this run started with
 task.md         copy of the spec
 spec/author.txt
-stage-tests/round-N/{author.txt, critic.json, gates.json}
-stage-code/round-N/{author.txt, critic.json, gates.json}
-review/{standards.json, security.json, scanner.json}
+stage-tests/round-N/{author.txt, diff.patch, critic.json, gates.json}
+stage-code/round-N/{author.txt, diff.patch, critic.json, gates.json}
+review/{diff.patch, standards.json, security.json, scanner.json}
 arbiter.json, arbiter-<stage>.json, final-pass-<kind>/...   (when the arbiter ran)
 final-gates.json
 report.md       human summary: status, findings, rulings, cost table, notes
@@ -351,9 +359,96 @@ run.lock        present only while a process is driving the run
 `_run` then skips every stage already in `state.commits`. The interrupted stage starts over at
 round 1.
 
+`diff.patch` is exactly the diff placed in that critic's (or both reviewers') prompt, so you
+can see what was judged. It's written before the critic is called.
+
 **Locking.** `RunLog.acquire_lock` writes the current process ID to `run.lock`.
 `RunLog.lock_holder` checks whether that process is still alive (`os.kill(pid, 0)`), so a lock
 left behind by a crash doesn't block anything.
+
+**Run ids are path components.** `RunLog.for_run` passes every id through `check_run_id`
+(letters, digits, `.`, `_`, `-`; no leading `.` or `-`; no `..`), and every CLI command that
+takes a run id validates it the same way, so no id can point outside `.advpipe/runs/`.
+
+## Progress events
+
+Every progress line goes through one function, `events.emit(runlog, state, progress, kind,
+message, **data)`. It appends an event to `events.jsonl` (opened in append mode and closed per
+event, so each line is on disk before the run moves on) and then hands `message` to the
+`progress` callback, which is the CLI's timestamped stderr printer. The terminal text is the
+event's `message`, unchanged from before the event log existed. `Orchestrator._emit` and
+`Context.emit` are thin wrappers that fill in the run log and state.
+
+```json
+{"ts": "2026-10-08T04:41:02.512Z", "kind": "agent_done", "stage": "CODE", "round": 2,
+ "message": "coder done in 63s, $0.31 (run total $1.10)", "role": "coder",
+ "cost_usd": 0.31, "total_usd": 1.10, "is_error": false}
+```
+
+Every event has `ts`, `kind`, `stage`, `round` (from `RunState` at that moment) and `message`.
+Extra fields by kind:
+
+| `kind` | When | Extra fields |
+|---|---|---|
+| `run_start` | new run (branch, worktree) or resume | `branch` or `worktree` (new runs) |
+| `stage` | `== STAGE`, and a stage passing or going to the arbiter | `passed` (for the latter) |
+| `round` | start of an author/critic round | `cap` |
+| `agent_start` / `agent_done` | around every agent call | `role`; `agent_done` adds `cost_usd`, `total_usd`, `is_error` |
+| `gates` | check results, scanner result, each blocking gate failure | `gates`: `{name: "pass" \| "fail" \| "skipped"}` (not on the failure lines) |
+| `verdict` | a critic or reviewer verdict | `role`, `verdict`, `blocking`, `minor` |
+| `guard` | the test-file guard reverted something | |
+| `test_fix` | the test-defect fix pass | `files` (when tests were committed) |
+| `ruling` | each arbiter ruling | `finding_id`, `decision` |
+| `status` | budget exceeded, interrupted, and the final event of every process | `status`; the final one adds `final: true` and `total_usd` |
+| `error` | an unexpected exception ended the run | |
+
+The final `status` event is written with `echo=False`: it isn't printed, because the CLI prints
+its own summary. Resumed runs append to the same file, so a run's whole history is one file. A
+reader (like the planned UI) can tail it, and knows the driving process has finished when it
+sees `final: true`.
+
+## Background runs, cancel and clean
+
+These live in `control.py` so the CLI stays thin and the UI can share them.
+
+**`advpipe run --detach`.** The parent validates everything it can first (sources, work-item
+file, config), picks the run id (`new_run_id`), and calls `start_detached`. That starts
+`python -m advpipe run ... --run-id <id>` with `subprocess.Popen` (an argument list, never a
+shell) in a new session (`start_new_session=True`), with stdin from `/dev/null` and
+stdout/stderr appended to `console.log`. It then writes the child's pid to `run.lock`, so
+`cancel` works before the child has even started up. The parent prints the run id on stdout
+and exits. A work item given as text is passed after `--`, so text starting with `-` isn't read
+as an option. `--run-id` is a hidden option, used only for this.
+
+**`advpipe cancel`.** `cancel_run` reads `run.lock`, checks the process is alive and (where
+`/proc` exists) that its command line mentions `advpipe`, so a stale lock whose pid was reused
+after a reboot can't make it signal an unrelated process. It then sends `SIGINT`. In the run's
+process, `asyncio.run` turns SIGINT into cancelling the main task, which arrives in
+`Orchestrator.run` as `CancelledError`: the existing Ctrl-C path. The run records "Interrupted
+during <stage>", keeps status `running`, writes `run.json` and `report.md`, and releases the
+lock; then the CLI exits with code 130. Cancellation lands at the next `await` (an agent call
+or a gate). Git calls are synchronous, so they're never cut off halfway, and resume resets the
+worktree anyway. `run` and `resume` restore the default SIGINT handler if the process was
+started with SIGINT ignored (as a shell's `&` does), so cancel always works.
+
+**`advpipe clean`.** `clean_run` does all its checks before deleting anything. It refuses
+`complete` runs (the branch is the deliverable) and active runs (cancel first; `--force`
+doesn't override this). It refuses a branch with commits that no other local branch contains
+(`unmerged_commits` in `workspace.py`: `git rev-list --count B --not --exclude=B --branches`)
+unless `--force`. As defence in depth, it only removes a worktree under `.advpipe/worktrees/`
+and only deletes branches starting with `advpipe/`, whatever `run.json` says. Then it removes
+the worktree, prunes, deletes the branch, and either deletes the run directory (`--logs`) or
+adds a "Cleaned up" note to `run.json` and `report.md`.
+
+## Work-item files
+
+`advpipe run --item FILE` reads the task from a file (`workitem.load_work_item`). An optional
+front-matter block (a first line of `---`, `key: value` lines, a closing `---`) sets `name` and
+`config`. It's parsed by hand, so there's no YAML dependency, and it's strict: unknown keys,
+repeated keys, empty values, malformed lines, a missing closing `---` and an empty body are
+all errors, reported with file and line. Command-line options override front matter, and a
+front-matter `config` is relative to the repo root. The body (without front matter) becomes
+`RunState.work_item`; the file's absolute path is stored in `RunState.work_item_file`.
 
 ## Parallel runs
 
@@ -405,6 +500,11 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   table).
 - `test_resume.py`, `test_parallel.py`, `test_cli.py`, plus unit tests for models, gates,
   stages, workspace and config/prompt sync.
+- `test_events.py` (event log matches the printed progress, ordering, flushing, resume,
+  `diff.patch`), `test_workitem.py` (front matter, `--item`), `test_control.py` (detach,
+  cancel, clean, run-id traversal). Detach and cancel tests start a real background process:
+  `tests/advpipe_fake_child.py` is the real CLI with a `FakeAgentRunner` that can be held at a
+  chosen role until a file appears. Tests point `control.child_command` at it.
 
 ## Extending it
 

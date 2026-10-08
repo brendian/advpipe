@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 
 from advpipe.budget import Budget
 from advpipe.config import Config
+from advpipe.events import EventKind, emit, gate_statuses
 from advpipe.gates import (
     GateResult,
     format_gates,
@@ -63,9 +64,9 @@ class Context:
     last_gates: list[GateResult] = field(default_factory=list)
     progress: Callable[[str], None] = _no_progress
 
-    def emit(self, message: str) -> None:
-        """Report human-readable progress (printed live by the CLI)."""
-        self.progress(message)
+    def emit(self, kind: EventKind, message: str, *, echo: bool = True, **data: object) -> None:
+        """Record a progress event in events.jsonl and print ``message`` live (CLI)."""
+        emit(self.runlog, self.state, self.progress, kind, message, echo=echo, **data)
 
     @property
     def spec_commit(self) -> str:
@@ -87,7 +88,7 @@ class Context:
 
 async def call_agent(ctx: Context, role: Role, prompt: str, stage: str) -> AgentResult:
     request = build_request(role, prompt, ctx.config, ctx.workspace.path, ctx.budget.remaining)
-    ctx.emit(f"{role.value} working ({request.model})...")
+    ctx.emit("agent_start", f"{role.value} working ({request.model})...", role=role.value)
     started = time.monotonic()
     result = await ctx.runner.run(request)
     try:
@@ -96,16 +97,26 @@ async def call_agent(ctx: Context, role: Role, prompt: str, stage: str) -> Agent
         ctx.save()
         error = " [agent reported an error]" if result.is_error else ""
         ctx.emit(
+            "agent_done",
             f"{role.value} done in {time.monotonic() - started:.0f}s, ${result.cost_usd:.2f}"
-            f" (run total ${ctx.budget.spent:.2f}){error}"
+            f" (run total ${ctx.budget.spent:.2f}){error}",
+            role=role.value,
+            cost_usd=result.cost_usd,
+            total_usd=ctx.budget.spent,
+            is_error=result.is_error,
         )
     return result
 
 
-def _verdict_line(role: Role, verdict: Verdict) -> str:
-    return (
-        f"{role.value}: {verdict.verdict} "
-        f"({len(verdict.blocking)} blocking, {len(verdict.minor)} minor)"
+def _emit_verdict(ctx: Context, role: Role, verdict: Verdict) -> None:
+    blocking, minor = len(verdict.blocking), len(verdict.minor)
+    ctx.emit(
+        "verdict",
+        f"{role.value}: {verdict.verdict} ({blocking} blocking, {minor} minor)",
+        role=role.value,
+        verdict=verdict.verdict,
+        blocking=blocking,
+        minor=minor,
     )
 
 
@@ -327,7 +338,10 @@ async def test_fix_pass(
         "assertions just to make them pass. Don't edit implementation files; changes outside "
         "the test paths are reverted. Re-run the tests, then reply with a short summary."
     )
-    ctx.emit(f"code-critic reports {len(defects)} defective test(s): one fix pass by test-author")
+    ctx.emit(
+        "test_fix",
+        f"code-critic reports {len(defects)} defective test(s): one fix pass by test-author",
+    )
     result = await call_agent(ctx, Role.TEST_AUTHOR, prompt, "stage-code")
     ctx.runlog.write_text(f"{rdir}/test-fix.txt", result.text)
 
@@ -347,16 +361,16 @@ async def test_fix_pass(
     if reverted:
         note = "Test author edited non-test files during its fix pass; reverted: "
         ctx.state.notes.append(note + ", ".join(reverted))
-        ctx.emit(f"test-author edited non-test files; reverted: {', '.join(reverted)}")
+        ctx.emit("guard", f"test-author edited non-test files; reverted: {', '.join(reverted)}")
 
     changed = ws.changed_files(tests_base, paths)
     if not changed:
-        ctx.emit("test-author changed no tests")
+        ctx.emit("test_fix", "test-author changed no tests")
         return tests_base
     commit = ws.commit_paths(f"advpipe: test fix ({rdir.replace('/', ' ')})", changed)
     ctx.state.commits["tests"] = commit  # the coder's test guard now protects the fixed tests
     ctx.state.notes.append("Test author fixed defective tests: " + ", ".join(changed))
-    ctx.emit(f"test fix committed: {', '.join(changed)}")
+    ctx.emit("test_fix", f"test fix committed: {', '.join(changed)}", files=changed)
     return commit
 
 
@@ -393,7 +407,7 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
         rounds = rnd
         ctx.state.round = rnd
         ctx.save()
-        ctx.emit(f"round {rnd}/{cap}")
+        ctx.emit("round", f"round {rnd}/{cap}", cap=cap)
         rdir = f"{stage}/round-{rnd}"
 
         if rnd == 1:
@@ -415,18 +429,19 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
 
         guard = test_file_guard(ctx, tests_base) if kind == "code" else []
         if guard:
-            ctx.emit(f"test-file guard: coder edited tests ({guard[0].evidence})")
+            ctx.emit("guard", f"test-file guard: coder edited tests ({guard[0].evidence})")
         gates, gate_f = await stage_gates(ctx, kind)
         ctx.last_gates = gates
         expect = " (new tests should fail before implementation)" if kind == "tests" else ""
-        ctx.emit(f"gates: {gates_line(gates)}{expect}")
+        ctx.emit("gates", f"gates: {gates_line(gates)}{expect}", gates=gate_statuses(gates))
         for f in gate_f:
-            ctx.emit(f"  blocking: {f.claim}")
+            ctx.emit("gates", f"  blocking: {f.claim}")
 
         diff = ctx.workspace.diff(base, REVIEW_PATHS)
+        ctx.runlog.write_text(f"{rdir}/diff.patch", diff)  # exactly what the critic judges
         prompt = critic_prompt(ctx, kind, label, diff, gates)
         verdict, raw = await call_critic(ctx, critic, prompt, stage)
-        ctx.emit(_verdict_line(critic, verdict))
+        _emit_verdict(ctx, critic, verdict)
         ctx.runlog.write_text(f"{rdir}/critic.json", raw)
 
         # A failing test the critic says is itself wrong goes back to the test author, once per
@@ -438,7 +453,9 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
             tests_base = await test_fix_pass(ctx, defects, gates, tests_base, rdir)
             gates, gate_f = await stage_gates(ctx, kind)
             ctx.last_gates = gates
-            ctx.emit(f"gates after test fix: {gates_line(gates)}")
+            ctx.emit(
+                "gates", f"gates after test fix: {gates_line(gates)}", gates=gate_statuses(gates)
+            )
         ctx.runlog.write_json(f"{rdir}/gates.json", gates)
 
         # Test-defect claims are recorded, never sent to the coder (it can't edit tests).
@@ -464,9 +481,10 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
     ctx.state.rounds_used[kind] = rounds
     if for_arbiter or to_author:
         reason = "round cap reached" if to_author else "disputed findings"
-        ctx.emit(f"{reason}: {len(for_arbiter) + len(to_author)} open finding(s) go to the arbiter")
+        count = len(for_arbiter) + len(to_author)
+        ctx.emit("stage", f"{reason}: {count} open finding(s) go to the arbiter", passed=False)
     else:
-        ctx.emit(f"{kind} stage passed in {rounds} round(s)")
+        ctx.emit("stage", f"{kind} stage passed in {rounds} round(s)", passed=True)
     open_findings = for_arbiter + [Dispute(finding=f) for f in to_author]
     return StageResult(
         name=kind,
@@ -482,7 +500,7 @@ async def review_stage(ctx: Context) -> StageResult:
     scanner = await run_gate(
         "security", ctx.config.gates.security, ctx.workspace.path, ctx.config.limits.gate_timeout_s
     )
-    ctx.emit(f"security scanner: {gates_line([scanner])}")
+    ctx.emit("gates", f"security scanner: {gates_line([scanner])}", gates=gate_statuses([scanner]))
     if scanner.skipped:
         ctx.state.notes.append(
             f"Security scanner not run ({scanner.skip_reason}); "
@@ -491,6 +509,7 @@ async def review_stage(ctx: Context) -> StageResult:
     ctx.runlog.write_json("review/scanner.json", scanner)
 
     diff = ctx.workspace.diff(ctx.state.base_commit, REVIEW_PATHS)
+    ctx.runlog.write_text("review/diff.patch", diff)  # exactly what both reviewers judge
     gates_text = format_gates(ctx.last_gates)
     standards_doc = ctx.workspace.path / ctx.config.paths.standards_doc
     doc = standards_doc.read_text() if standards_doc.is_file() else "(no standards doc found)"
@@ -511,8 +530,8 @@ async def review_stage(ctx: Context) -> StageResult:
         call_critic(ctx, Role.STANDARDS_REVIEWER, std_prompt, "review"),
         call_critic(ctx, Role.SECURITY_REVIEWER, sec_prompt, "review"),
     )
-    ctx.emit(_verdict_line(Role.STANDARDS_REVIEWER, std))
-    ctx.emit(_verdict_line(Role.SECURITY_REVIEWER, sec))
+    _emit_verdict(ctx, Role.STANDARDS_REVIEWER, std)
+    _emit_verdict(ctx, Role.SECURITY_REVIEWER, sec)
     ctx.runlog.write_text("review/standards.json", std_raw)
     ctx.runlog.write_text("review/security.json", sec_raw)
 
@@ -571,7 +590,12 @@ async def arbiter_stage(ctx: Context, disputes: list[Dispute], label: str) -> li
                 )
             )
     for r in rulings:
-        ctx.emit(f"  {r.finding_id}: {r.decision} ({r.reason})")
+        ctx.emit(
+            "ruling",
+            f"  {r.finding_id}: {r.decision} ({r.reason})",
+            finding_id=r.finding_id,
+            decision=r.decision,
+        )
     return rulings
 
 
@@ -587,7 +611,7 @@ async def final_author_pass(
     guard = test_file_guard(ctx, ctx.tests_commit) if kind == "code" else []
     gates, gate_f = await stage_gates(ctx, kind)
     ctx.last_gates = gates
-    ctx.emit(f"gates after final pass: {gates_line(gates)}")
+    ctx.emit("gates", f"gates after final pass: {gates_line(gates)}", gates=gate_statuses(gates))
     ctx.runlog.write_json(f"final-pass-{kind}/gates.json", gates)
     return guard + gate_f
 

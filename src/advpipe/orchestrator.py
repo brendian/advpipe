@@ -11,6 +11,7 @@ from pathlib import Path
 
 from advpipe.budget import Budget, BudgetExceeded
 from advpipe.config import Config
+from advpipe.events import EventKind, emit
 from advpipe.gates import gate_findings, run_gates
 from advpipe.models import RESUMABLE, Finding, RunState, Stage, StageResult, Status
 from advpipe.runlog import RunLog, render_report
@@ -60,6 +61,7 @@ class Orchestrator:
         state: RunState | None = None,
         progress: Callable[[str], None] | None = None,
         name: str | None = None,
+        work_item_file: str = "",
     ) -> None:
         if state is None and not work_item.strip():
             raise ValueError("work_item must not be empty")
@@ -68,7 +70,10 @@ class Orchestrator:
         self.repo = repo.resolve()
         self.keep_worktree = keep_worktree
         self.state = state or RunState(
-            run_id=run_id or new_run_id(), work_item=work_item, repo=str(self.repo)
+            run_id=run_id or new_run_id(),
+            work_item=work_item,
+            work_item_file=work_item_file,
+            repo=str(self.repo),
         )
         self.run_id = self.state.run_id
         self.runlog = RunLog.for_run(self.repo, self.run_id)
@@ -125,30 +130,47 @@ class Orchestrator:
         except BudgetExceeded as e:
             self.state.status = Status.BUDGET_EXCEEDED
             self.state.notes.append(str(e))
-            self.progress(str(e))
+            self._emit("status", str(e), status=self.state.status.value)
         except asyncio.CancelledError:
-            # Interrupted (e.g. Ctrl-C): status stays "running" so the run can be resumed.
+            # Interrupted (Ctrl-C or `advpipe cancel`): status stays "running", so it's resumable.
             self.state.notes.append(f"Interrupted during {self.state.stage.value}")
-            self.progress(f"interrupted; resume with: advpipe resume {self.run_id}")
+            self._emit(
+                "status",
+                f"interrupted; resume with: advpipe resume {self.run_id}",
+                status=self.state.status.value,
+            )
             raise
         except Exception as e:  # noqa: BLE001 - any failure must end in a recorded state
             log.exception("run %s failed", self.run_id)
             self.state.status = Status.ERROR
             self.state.notes.append(f"{type(e).__name__}: {e}")
-            self.progress(f"error: {type(e).__name__}: {e}")
+            self._emit("error", f"error: {type(e).__name__}: {e}")
         finally:
             self.state.cost_usd = self.budget.spent
             self.state.cost_by_stage = dict(self.budget.by_stage)
             self.state.calls_by_stage = dict(self.budget.calls_by_stage)
             self.runlog.write_state(self.state)
             self.runlog.write_text("report.md", render_report(self.state))
+            # The last event of every process driving the run; not printed (the CLI prints
+            # its own summary).
+            self._emit(
+                "status",
+                f"run ended: {self.state.status.value}",
+                echo=False,
+                status=self.state.status.value,
+                final=True,
+                total_usd=self.budget.spent,
+            )
             self.runlog.release_lock()
         return self.state
 
+    def _emit(self, kind: EventKind, message: str, *, echo: bool = True, **data: object) -> None:
+        emit(self.runlog, self.state, self.progress, kind, message, echo=echo, **data)
+
     def _enter(self, stage: Stage) -> None:
-        self.progress(f"== {stage.value}")
         self.state.stage = stage
         self.state.round = 0
+        self._emit("stage", f"== {stage.value}")
         self.runlog.write_state(self.state)
 
     def _stop(self, status: Status, open_findings: list[Finding] | None = None) -> None:
@@ -159,7 +181,7 @@ class Orchestrator:
     def _open_workspace(self) -> Workspace:
         if self.state.branch:
             self.state.notes.append(f"Resumed at stage {self.state.stage.value}")
-            self.progress(f"resuming run {self.run_id} at stage {self.state.stage.value}")
+            self._emit("run_start", f"resuming run {self.run_id} at stage {self.state.stage.value}")
             self.state.status = Status.RUNNING
             self.state.open_findings = []
             return Workspace.reopen(self.repo, Path(self.state.worktree), self.state.branch)
@@ -169,8 +191,8 @@ class Orchestrator:
         self.state.worktree = str(ws.path)
         self.state.branch = ws.branch
         self.state.base_commit = ws.head()
-        self.progress(f"run {self.run_id} started; branch {ws.branch}")
-        self.progress(f"worktree: {ws.path}")
+        self._emit("run_start", f"run {self.run_id} started; branch {ws.branch}", branch=ws.branch)
+        self._emit("run_start", f"worktree: {ws.path}", worktree=str(ws.path))
         return ws
 
     async def _run(self) -> None:

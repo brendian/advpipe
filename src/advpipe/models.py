@@ -135,6 +135,8 @@ def _now() -> datetime:
 class RunState(BaseModel):
     run_id: str
     work_item: str
+    # The work-item file the run was started from (`advpipe run --item`), as an absolute path.
+    work_item_file: str = ""
     repo: str
     worktree: str = ""
     branch: str = ""

@@ -77,6 +77,20 @@ def branch_exists(repo: Path, branch: str) -> bool:
     return proc.returncode == 0
 
 
+def unmerged_commits(repo: Path, branch: str) -> int:
+    """Commits on ``branch`` that no other local branch contains (lost if it's deleted)."""
+    out = git(
+        repo,
+        "rev-list",
+        "--count",
+        f"refs/heads/{branch}",
+        "--not",
+        f"--exclude={branch}",
+        "--branches",
+    )
+    return int(out.strip())
+
+
 def unique_branch(repo: Path, name: str) -> str:
     """``advpipe/<slug of name>``, with -2, -3, ... appended if that branch already exists."""
     base = BRANCH_PREFIX + slugify(name)

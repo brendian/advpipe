@@ -154,6 +154,10 @@ With [uv](https://docs.astral.sh/uv/): `uv venv && uv pip install -e .`
    Describe the change the way you'd write a ticket for a colleague. The spec writer turns it
    into precise acceptance criteria. A typical small task takes a few minutes.
 
+   For anything longer than a sentence, write it in a markdown file and pass the file:
+   `advpipe run --repo path/to/project --item work-items/s03-stock.md` (see
+   [work-item files](#work-item-files)).
+
 4. **Read the report** (its path is printed at the end) and **review the branch** (see
    [Reviewing the result](#reviewing-the-result)).
 
@@ -242,9 +246,10 @@ git -C path/to/project merge advpipe/<branch>       # accept it
 to delete `task.md` first, or keep it as documentation.
 
 **Cleaning up:** after a `complete` run the working copy is removed automatically, so only the
-branch is left. Delete the branch with `git branch -D advpipe/<branch>` when you're done. Run
-logs live in `.advpipe/` in your project. That folder is excluded from git automatically, and
-you can delete it at any time.
+branch is left. Delete the branch with `git branch -D advpipe/<branch>` when you're done. For a
+run that failed or that you don't want, `advpipe clean <run-id>` removes its working copy and
+branch (see [`advpipe clean`](#advpipe-clean)). Run logs live in `.advpipe/` in your project.
+That folder is excluded from git automatically, and you can delete it at any time.
 
 ## Commands
 
@@ -254,11 +259,15 @@ Run one or more tasks.
 
 ```sh
 advpipe run "task description" [--repo PATH] [--config FILE] [--name NAME] [--keep-worktree]
+advpipe run --item work-items/s03-stock.md [--repo PATH] [--detach]
 advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
 ```
 
 - `--repo`: the project to work on (default: current directory). Must be a git repository.
 - `--config`: config file (default: `<repo>/pipeline.toml`, falling back to built-in defaults).
+- `--item FILE`: read the task from a markdown file. The file can set defaults for `--name` and
+  `--config` in a front-matter block (see [work-item files](#work-item-files)). Prefer this to
+  `"$(cat FILE)"`, which silently passes an empty task if the file doesn't exist.
 - `--from-file`: run each non-empty line of a file as a separate task. Lines starting with `#`
   are skipped.
 - `--parallel N`: with `--from-file`, run up to N tasks at once. Each task gets its own branch,
@@ -268,14 +277,43 @@ advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
   If that branch already exists, `-2`, `-3`, ... is appended.
 - `--keep-worktree`: don't delete the working copy after a successful run.
 - `--quiet` / `-q`: don't print live progress.
+- `--detach`: run in the background. advpipe prints the run id and returns at once; the run
+  keeps going even if you close the terminal. Its progress goes to
+  `.advpipe/runs/<run-id>/console.log`. Follow it with `advpipe status <run-id>`, stop it with
+  `advpipe cancel <run-id>`. Works with a single task (a description or `--item`).
+
+Give exactly one of a task description, `--item` or `--from-file`.
 
 While it runs, advpipe prints timestamped progress to stderr: each stage, each agent starting
 and finishing (with its cost and the run total so far), check results, critic verdicts and
 arbiter rulings. With several tasks, each line is prefixed with `[item N]`. When the run
 finishes, a one-line summary per task goes to stdout, so `advpipe run ... > result.txt` captures
-just the summary.
+just the summary. The same progress is also written, one JSON object per line, to
+`.advpipe/runs/<run-id>/events.jsonl` (see [the run directory](docs/ARCHITECTURE.md#persistence-resume-and-locking)).
 
-Exit code: 0 if every task completed, 1 otherwise.
+Exit code: 0 if every task completed, 1 otherwise, 130 if it was interrupted (Ctrl-C or
+`advpipe cancel`). With `--detach`, 0 once the run has started.
+
+#### Work-item files
+
+A work item is a markdown file. Its text is the task. An optional front-matter block at the very
+top sets defaults for that task:
+
+```markdown
+---
+name: s03-stock
+config: pipeline.server.toml
+---
+Add stock level changes with a change history...
+```
+
+- `name`: the branch name, as with `--name` (here `advpipe/s03-stock`).
+- `config`: the config file, relative to the repo root, as with `--config`.
+
+Only these two keys are allowed, one `key: value` per line; anything else is an error, so typos
+don't go unnoticed. Options on the command line win over front matter. A file with no text after
+the front matter is rejected. The run remembers which file it came from (`work_item_file` in
+`run.json`).
 
 ### `advpipe status`
 
@@ -305,6 +343,34 @@ Continue a run that was interrupted (Ctrl-C, crash, closed laptop), stopped by a
 out of budget. It picks up at the first stage that didn't finish; finished stages aren't redone
 or paid for again. Use `--budget` to raise the limit after `budget_exceeded`. Completed runs and
 `needs_human` runs can't be resumed. Start a new run instead.
+
+### `advpipe cancel`
+
+```sh
+advpipe cancel <run-id> [--repo PATH]
+```
+
+Stops a running run, whether it's in another terminal or started with `--detach`. It's the same
+as pressing Ctrl-C in the run's terminal: the run stops at its next safe point (when the current
+agent call or check is interrupted), keeps its finished stages, and shows as `running` in
+`advpipe status`. Continue it later with `advpipe resume <run-id>`. With `--from-file`, all tasks
+share one process, so cancelling one cancels them all.
+
+### `advpipe clean`
+
+```sh
+advpipe clean <run-id> [--repo PATH] [--force] [--logs]
+```
+
+Removes the working copy and the `advpipe/...` branch of a run you don't want, such as one that
+failed or stopped at `needs_human`. The run's log stays (with a note) unless you pass `--logs`.
+
+It refuses:
+
+- **complete runs**: their branch is the result. Delete it with `git branch -D` when you're done.
+- **active runs**: stop them first with `advpipe cancel`.
+- **branches with commits no other branch has**, unless you pass `--force`. It shows the
+  `git log` command to look at them first.
 
 ### `advpipe gates`
 
@@ -480,7 +546,14 @@ task description and run again.
 
 **`budget_exceeded`**: `advpipe resume <run-id> --budget 30` continues where it stopped.
 
-**I pressed Ctrl-C**: `advpipe status` shows the run as `running`. Run `advpipe resume <run-id>`.
+**I pressed Ctrl-C** (or ran `advpipe cancel`): `advpipe status` shows the run as `running`.
+Run `advpipe resume <run-id>`.
+
+**A run started with `--detach` seems stuck**: look at `.advpipe/runs/<run-id>/console.log`
+and `advpipe status <run-id>`.
+
+**`unknown key '...' (known keys: name, config)`**: a work-item file's front matter may only
+set `name` and `config`.
 
 **"run is still being driven by pid N"**: another advpipe process is working on that run. Wait
 for it, or stop it first.
@@ -494,7 +567,8 @@ the scan on purpose.
 commands. The defaults assume Python.
 
 **Can I see what each agent said?** Yes. `.advpipe/runs/<run-id>/` contains every agent's
-output, each critic's verdict and each round's check results.
+output, the exact diff each critic judged (`diff.patch`), each critic's verdict, each round's
+check results, and a timeline of events (`events.jsonl`).
 
 **What if one of the generated tests is wrong?** The coder isn't allowed to change tests, so if
 a test is itself broken (say, invalid SQL in the test), the code critic reports it as a

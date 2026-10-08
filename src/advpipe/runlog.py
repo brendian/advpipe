@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,9 +14,20 @@ from pydantic import BaseModel
 from advpipe.config import Config
 from advpipe.models import Finding, RunState
 
+EVENTS_FILE = "events.jsonl"
+# Run ids are path components: letters, digits, '.', '_' and '-', not starting with '.' or '-'.
+RUN_ID_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}")
+
 
 class RunLocked(RuntimeError):
     pass
+
+
+def check_run_id(run_id: str) -> str:
+    """Return ``run_id`` if it's safe to use as a directory name; raise ValueError otherwise."""
+    if not RUN_ID_RE.fullmatch(run_id) or ".." in run_id:
+        raise ValueError(f"invalid run id: {run_id!r}")
+    return run_id
 
 
 class RunLog:
@@ -24,7 +36,7 @@ class RunLog:
 
     @classmethod
     def for_run(cls, repo: Path, run_id: str) -> RunLog:
-        return cls(runs_dir(repo) / run_id)
+        return cls(runs_dir(repo) / check_run_id(run_id))
 
     def read_state(self) -> RunState:
         return RunState.model_validate_json((self.root / "run.json").read_text())
@@ -55,12 +67,14 @@ class RunLog:
             pass  # exists, owned by someone else
         return pid
 
-    def acquire_lock(self) -> None:
+    def acquire_lock(self, pid: int | None = None) -> None:
+        """Mark the run as driven by ``pid`` (default: this process)."""
+        pid = pid or os.getpid()
         holder = self.lock_holder()
-        if holder is not None and holder != os.getpid():
+        if holder is not None and holder != pid:
             raise RunLocked(f"run is being driven by pid {holder}")
         self.root.mkdir(parents=True, exist_ok=True)
-        self._lock.write_text(str(os.getpid()))
+        self._lock.write_text(str(pid))
 
     def release_lock(self) -> None:
         self._lock.unlink(missing_ok=True)
@@ -73,6 +87,12 @@ class RunLog:
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
+
+    def append_event(self, event: dict[str, object]) -> None:
+        """Append one JSON line to events.jsonl. Closing the file flushes it at once."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / EVENTS_FILE).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def write_json(
         self, rel: str, obj: BaseModel | Sequence[BaseModel] | dict[str, object]
