@@ -13,10 +13,12 @@ class BudgetExceeded(Exception):
 
 
 class Budget:
-    def __init__(self, limit_usd: float, spent_usd: float = 0.0) -> None:
+    def __init__(
+        self, limit_usd: float, spent_usd: float = 0.0, by_stage: dict[str, float] | None = None
+    ) -> None:
         self.limit = limit_usd
         self.spent = spent_usd
-        self.by_stage: defaultdict[str, float] = defaultdict(float)
+        self.by_stage: defaultdict[str, float] = defaultdict(float, by_stage or {})
 
     def add(self, cost_usd: float, stage: str = "") -> None:
         """Record a cost. Raises BudgetExceeded as soon as the limit is crossed."""

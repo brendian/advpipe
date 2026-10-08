@@ -52,12 +52,19 @@ class Context:
     runlog: RunLog
     state: RunState
     task_md: str = ""
-    spec_commit: str = ""
-    tests_commit: str = ""
     last_gates: list[GateResult] = field(default_factory=list)
+
+    @property
+    def spec_commit(self) -> str:
+        return self.state.commits.get("spec", "")
+
+    @property
+    def tests_commit(self) -> str:
+        return self.state.commits.get("tests", "")
 
     def save(self) -> None:
         self.state.cost_usd = self.budget.spent
+        self.state.cost_by_stage = dict(self.budget.by_stage)
         self.runlog.write_state(self.state)
 
 

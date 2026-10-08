@@ -313,3 +313,27 @@ async def test_minor_findings_reported_not_fixed(config: Config, target_repo: Pa
     assert [f.id for f in state.minor_findings] == ["STD-F1"]
     assert len(runner.calls_for(Role.CODER)) == 1
     assert "STD-F1" in (logdir / "report.md").read_text()
+
+
+async def test_worktree_removed_on_success_branch_kept(config: Config, target_repo: Path) -> None:
+    state, logdir = await run(config, target_repo, FakeAgentRunner(happy_scripts()))
+    assert state.status is Status.COMPLETE and state.worktree_removed
+    assert not Path(state.worktree).exists()
+    assert "advpipe/t1" in git(target_repo, "branch", "--list", "advpipe/t1")
+    assert git(target_repo, "worktree", "list").count("\n") == 1  # only the main tree
+    assert "(worktree removed)" in (logdir / "report.md").read_text()
+
+
+async def test_worktree_kept_when_asked(config: Config, target_repo: Path) -> None:
+    runner = FakeAgentRunner(happy_scripts())
+    orch = Orchestrator(config, runner, target_repo, "w", run_id="t1", keep_worktree=True)
+    state = await orch.run()
+    assert state.status is Status.COMPLETE and Path(state.worktree).is_dir()
+
+
+async def test_worktree_kept_when_not_complete(config: Config, target_repo: Path) -> None:
+    scripts = happy_scripts()
+    scripts[Role.SPEC_WRITER] = [writes({"task.md": TASK_MD_BLOCKING})]
+    state, _ = await run(config, target_repo, FakeAgentRunner(scripts))
+    assert state.status is Status.NEEDS_HUMAN
+    assert Path(state.worktree).is_dir() and not state.worktree_removed

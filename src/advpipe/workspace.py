@@ -25,18 +25,36 @@ def git(cwd: Path, *args: str) -> str:
 class Workspace:
     """A git worktree on branch ``advpipe/<run-id>``. The user's working tree is never touched."""
 
-    def __init__(self, path: Path, branch: str) -> None:
+    def __init__(self, repo: Path, path: Path, branch: str) -> None:
+        self.repo = repo
         self.path = path
         self.branch = branch
 
     @classmethod
     def create(cls, repo: Path, run_id: str) -> Workspace:
+        """New worktree and branch off the repo's current HEAD."""
         repo = Path(git(repo, "rev-parse", "--show-toplevel").strip())
         _exclude_advpipe_dir(repo)
         path = repo / ".advpipe" / "worktrees" / run_id
         branch = f"advpipe/{run_id}"
         git(repo, "worktree", "add", "-q", "-b", branch, str(path), "HEAD")
-        return cls(path, branch)
+        return cls(repo, path, branch)
+
+    @classmethod
+    def reopen(cls, repo: Path, path: Path, branch: str) -> Workspace:
+        """Reattach to a run's worktree, discarding uncommitted work from an interrupted stage."""
+        repo = Path(git(repo, "rev-parse", "--show-toplevel").strip())
+        if path.is_dir():
+            git(path, "reset", "-q", "--hard", "HEAD")
+            git(path, "clean", "-q", "-fd")
+        else:
+            git(repo, "worktree", "prune")
+            git(repo, "worktree", "add", "-q", str(path), branch)
+        return cls(repo, path, branch)
+
+    def remove(self) -> None:
+        """Delete the worktree directory. The branch (and all committed work) is kept."""
+        git(self.repo, "worktree", "remove", "--force", str(self.path))
 
     def head(self) -> str:
         return git(self.path, "rev-parse", "HEAD").strip()

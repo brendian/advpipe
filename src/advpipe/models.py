@@ -148,5 +148,13 @@ class RunState(BaseModel):
     minor_findings: list[Finding] = Field(default_factory=list)
     rulings: list[Ruling] = Field(default_factory=list)
     rounds_used: dict[str, int] = Field(default_factory=dict)
+    # Commit recorded at the end of each completed stage ("spec", "tests", "code", "review").
+    # A resumed run skips every stage listed here.
+    commits: dict[str, str] = Field(default_factory=dict)
+    cost_by_stage: dict[str, float] = Field(default_factory=dict)
+    worktree_removed: bool = False
     notes: list[str] = Field(default_factory=list)
     noise_dropped: int = 0
+
+
+RESUMABLE = frozenset({Status.RUNNING, Status.ERROR, Status.BUDGET_EXCEEDED})

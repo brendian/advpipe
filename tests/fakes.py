@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any
@@ -13,13 +14,24 @@ Step = str | Callable[[AgentRequest], str]
 
 
 class FakeAgentRunner:
-    def __init__(self, scripts: dict[Role, list[Step]], cost_per_call: float = 0.01) -> None:
+    def __init__(
+        self,
+        scripts: dict[Role, list[Step]],
+        cost_per_call: float = 0.01,
+        *,
+        name: str = "",
+        events: list[tuple[str, Role]] | None = None,
+    ) -> None:
         self.scripts = {role: list(steps) for role, steps in scripts.items()}
         self.cost_per_call = cost_per_call
         self.calls: list[AgentRequest] = []
+        self.name = name
+        self.events = events if events is not None else []
 
     async def run(self, request: AgentRequest) -> AgentResult:
+        await asyncio.sleep(0)  # yield, so concurrent runs really interleave
         self.calls.append(request)
+        self.events.append((self.name, request.role))
         queue = self.scripts.get(request.role, [])
         if not queue:
             raise AssertionError(f"unexpected call to {request.role.value}")
@@ -191,6 +203,42 @@ __all__ = ["clamp", "mean", "safe_div"]
 
 IMPL_OK = {"mathutils/core.py": CORE_HEADER + CLAMP_OK, "mathutils/__init__.py": INIT}
 IMPL_WRONG = {"mathutils/core.py": CORE_HEADER + CLAMP_WRONG, "mathutils/__init__.py": INIT}
+
+
+def interrupt(req: AgentRequest) -> str:
+    """A step that simulates Ctrl-C arriving while this agent runs."""
+    raise asyncio.CancelledError
+
+
+TEST_SIGN = """from mathutils.sign import sign
+
+
+def test_sign() -> None:  # AC1
+    assert sign(-3) == -1
+    assert sign(0) == 0
+    assert sign(2) == 1
+"""
+
+SIGN_IMPL = '''"""Sign helper."""
+
+
+def sign(x: float) -> int:
+    """Return -1, 0 or 1 according to the sign of x."""
+    return (x > 0) - (x < 0)
+'''
+
+
+def sign_scripts() -> dict[Role, list[Step]]:
+    """A second, independent work item: add mathutils.sign."""
+    return {
+        Role.SPEC_WRITER: [writes({"task.md": TASK_MD.replace("clamp", "sign")})],
+        Role.TEST_AUTHOR: [writes({"tests/test_sign.py": TEST_SIGN})],
+        Role.TEST_CRITIC: [verdict_pass()],
+        Role.CODER: [writes({"mathutils/sign.py": SIGN_IMPL})],
+        Role.CODE_CRITIC: [verdict_pass()],
+        Role.STANDARDS_REVIEWER: [verdict_pass()],
+        Role.SECURITY_REVIEWER: [verdict_pass()],
+    }
 
 
 def happy_scripts() -> dict[Role, list[Step]]:
