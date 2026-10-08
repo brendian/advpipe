@@ -35,8 +35,10 @@
     </label>
     <div class="preview-pane">
       <div class="field-label">Preview and checks</div>
+      {#- Own hx-target and hx-swap: without them this inherits the form's, and every
+          keystroke would replace the whole form with the preview. #}
       <div id="item-preview" hx-post="/items/preview" hx-trigger="input delay:400ms from:#item-form"
-           hx-include="#item-form" aria-live="polite">{% include "_item_preview.html" %}</div>
+           hx-include="#item-form" hx-target="this" hx-swap="innerHTML" aria-live="polite">{% include "_item_preview.html" %}</div>
     </div>
   </div>
   <div class="form-actions">

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -155,6 +156,40 @@ def test_every_page_has_skip_link_theme_button_and_no_inline_code(target_repo: P
         # The CSP forbids inline script and style, so pages must not rely on them.
         assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", page), path
         assert " style=" not in page and "<style" not in page, path
+
+
+class _NestedRequests(HTMLParser):
+    """Elements that make an htmx request inside an element with an ``hx-target``."""
+
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.targets: list[bool] = []  # one per open element: does it set hx-target?
+        self.found: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = dict(attrs)
+        if any(self.targets) and ("hx-post" in a or "hx-get" in a):
+            self.found.append(a)
+        if tag not in self.VOID:
+            self.targets.append("hx-target" in a)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag not in self.VOID and self.targets:
+            self.targets.pop()
+
+
+def test_requests_inside_a_targeted_form_set_their_own_target(target_repo: Path) -> None:
+    # htmx inherits hx-target and hx-swap, and an inherited hx-target="this" means the
+    # ancestor. A live preview inside the editor form once replaced the whole form as you typed.
+    client = logged_in(target_repo)
+    for path in ("/items/new", "/runs/new"):
+        parser = _NestedRequests()
+        parser.feed(client.get(path).text)
+        assert parser.found, path  # the live preview is there to check
+        for a in parser.found:
+            assert a.get("hx-target") and a.get("hx-swap"), (path, a)
 
 
 def test_theme_script_and_toggle_are_served(target_repo: Path) -> None:
