@@ -1,0 +1,13 @@
+{#- The inline checks and the rendered body. The body is the user's own text but still goes
+    through ui/render.py's markdown(), which escapes raw HTML. #}
+<ul class="item-checks">
+  {%- for c in checked.checks %}
+  <li class="check check-{{ c.level }}"><strong>{{ {"error": "Problem", "warning": "Warning", "info": "Note"}[c.level] }}:</strong> {{ c.text }}</li>
+  {%- endfor %}
+  {%- if checked.branch %}
+  <li class="check check-info"><strong>Branch:</strong> a run would make <code>{{ checked.branch }}</code>.</li>
+  {%- endif %}
+</ul>
+<div class="prose doc preview">
+  {%- if preview is not none %}{{ preview | safe }}{% else %}<p class="muted">Nothing to preview yet.</p>{% endif %}
+</div>

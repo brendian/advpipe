@@ -87,9 +87,9 @@ All code is in `src/advpipe/`.
 | `runlog.py` | The on-disk run directory, lock file, event log and `report.md`; run-id validation | `RunLog`, `check_run_id`, `render_report`, `list_runs` |
 | `events.py` | One `emit()` for progress: appends to `events.jsonl` and prints | `emit`, `EventKind`, `gate_statuses` |
 | `control.py` | Acting on runs from outside: detached start, cancel, clean | `start_detached`, `cancel_run`, `clean_run`, `ControlError` |
-| `workitem.py` | Work-item files with optional front matter | `parse_work_item`, `load_work_item`, `WorkItem` |
+| `workitem.py` | Work-item files with optional front matter | `parse_work_item`, `load_work_item`, `format_work_item`, `WorkItem` |
 | `config.py` | `pipeline.toml` loading and validation | `Config`, `load_config` |
-| `ui/` | Optional local web UI (the `ui` extra); see [The web UI](#the-web-ui) | `create_ui_app`, `GuardMiddleware`, `load_runs`, `load_detail`, `stream_events` |
+| `ui/` | Optional local web UI (the `ui` extra); see [The web UI](#the-web-ui) | `create_ui_app`, `GuardMiddleware`, `load_runs`, `load_detail`, `stream_events`, `item_path` |
 | `prompts/*.md` | One system prompt per role. **Source of truth** for agent behaviour. | |
 
 ## A run, step by step
@@ -454,6 +454,11 @@ repeated keys, empty values, malformed lines, a missing closing `---` and an emp
 all errors, reported with file and line. Command-line options override front matter, and a
 front-matter `config` is relative to the repo root. The body (without front matter) becomes
 `RunState.work_item`; the file's absolute path is stored in `RunState.work_item_file`.
+`format_work_item` writes the same layout back (front matter only for fields that are set, in
+`KEYS` order, then the body and one newline); `parse_work_item` reads it back as an equal
+`WorkItem`. A body whose first line is `---` gets an empty front-matter block, so it isn't
+mistaken for one. `salvage_work_item` pulls what it can out of a file that doesn't parse, so
+the UI's editor can open it to fix it.
 
 ## Parallel runs
 
@@ -476,7 +481,8 @@ table in `report.md` (`_cost_table` in `runlog.py`).
 ## The web UI
 
 `advpipe ui` serves a local web UI (plan and milestones: [UI_PLAN.md](UI_PLAN.md); built so far:
-the skeleton, the runs list, and the run detail page with its live log and spec & context tab). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
+the skeleton, the runs list, the run detail page with its live log and spec & context tab,
+and the work-items pages). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
 uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
 
 - **Read-only over the files.** The UI reads `.advpipe/runs/*/run.json` and `config.json`; it
@@ -519,6 +525,36 @@ uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
   from the run's branch, then its base commit, then the repo's working tree. The revision
   must match a ref-name pattern with no leading `-`, and the path must be relative with no
   `..`, so values from `run.json`/`config.json` can't become git options or leave the repo.
+- **Work items** (`/items`, `ui/items.py` + `routes/items.py`). The only part of the UI that
+  writes files, and it only writes inside the work-items folder (`--items-dir`). It never
+  commits: the list shows each file's git state instead.
+  - **Paths.** Every path comes from the browser, so all of them go through `item_path`: a
+    relative path of plain names (letters, digits, `-`, `_`, `.`, `+`, spaces; no part
+    starting with `.`, so no `..` or hidden files), at most `MAX_DEPTH` folders deep, ending
+    in `.md`, and still inside the folder after `resolve()`, so a symlink can't lead out.
+    Anything else is 400 on the pages and a form error on create and rename.
+  - **The list** (`load_items`) walks the folder (not following symlinked folders, skipping
+    hidden ones), groups files by folder, and adds each one's newest run (`last_runs`: runs
+    whose `RunState.work_item_file` is the file's resolved path) and git state (one
+    `git status --porcelain -z --untracked-files=all --ignored=matching -- <folder>`).
+    Files whose path `item_path` refuses are listed by name only, as not manageable here.
+  - **The editor** has the front-matter fields (branch name, config) and the body, with a
+    preview pane and inline checks (`check_draft`) that htmx re-fetches from
+    `POST /items/preview` as you type. Errors (an empty body, a multi-line field) block a save;
+    warnings don't: a config file that's missing, invalid or outside the repo, and a branch
+    `advpipe/<slugify(name or first line)>` that already exists (the run would add `-2`).
+    The branch name is the same one `Workspace.create` would make.
+  - **Saving** (`save_item`) refuses if the file changed on disk since the editor loaded it
+    (the form carries a SHA-256 of the file as loaded). If the fields parse equal to what's on
+    disk, the file isn't touched, so front matter round-trips byte for byte; otherwise it's
+    written with `format_work_item`. Textarea CRLFs become LF. Creating never overwrites
+    (`open("xb")`), and rename refuses an existing target.
+  - **Deleting asks first.** The list and editor link to a confirmation page (it says whether
+    git still has a copy). Only its form sends `confirm=yes`, and `POST /items/delete`
+    refuses without it.
+  - **Forms** post with htmx, so they carry the CSRF header. A form with problems comes back
+    re-rendered with status 422, which `base.html`'s `responseHandling` lets htmx swap in; other
+    errors aren't swapped. Success replies with `HX-Redirect` to the next page.
 - **Live updates** (`ui/live.py`). `/runs/<id>/events` is a Server-Sent Events stream of
   `events.jsonl` from a byte `offset` (the page passes the size it rendered, so nothing is
   shown twice). It polls the file, sends only complete lines, and sends three event types:
@@ -592,6 +628,11 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   agent text in every file the page reads; quoting in next-step commands; 404s for unknown and
   traversal ids; and the event stream: appended and half-written lines arrive in order,
   keepalives, `end` when the lock is released, `Last-Event-ID`, and offsets mid-line.
+- `test_ui_items.py`: work items on real files: a create, edit, rename and delete round trip;
+  front matter that round-trips byte for byte; refusing to overwrite changes made elsewhere;
+  broken files opening in the editor; the inline checks; the list's grouping, last runs and
+  git states; deleting only after confirming; path traversal (`../`, absolute, `%2e%2e`,
+  backslashes, symlinks out) on every route; and token and CSRF on every route.
 
 ## Extending it
 

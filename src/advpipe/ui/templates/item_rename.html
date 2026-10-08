@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Rename {{ rel }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/items/edit?{{ q }}">← Back to the item</a></p>
+<h1>Rename <code>{{ rel }}</code></h1>
+<p class="lead">Give it a new name, or move it to another folder. Earlier runs keep their copy of
+  the text, but they'll no longer show up as this item's last run.</p>
+{% include "_item_rename_form.html" %}
+{% endblock %}

@@ -9,6 +9,7 @@ Add stock level changes with a change history...
 ```
 
 Only simple ``key: value`` lines are parsed (no YAML). Unknown or repeated keys are an error.
+``format_work_item`` writes the same layout back (the web UI's editor uses it).
 """
 
 from __future__ import annotations
@@ -77,3 +78,42 @@ def load_work_item(path: Path) -> WorkItem:
     except (OSError, UnicodeDecodeError) as e:
         raise WorkItemError(f"can't read work item {path}: {e}") from e
     return parse_work_item(text, str(path))
+
+
+def format_work_item(item: WorkItem) -> str:
+    """The file text for ``item``: front matter for the fields that are set, then the body.
+    ``parse_work_item`` reads it back as an equal ``WorkItem`` (body stripped). Raises
+    WorkItemError if it couldn't: an empty body, or a value that's blank or not one line."""
+    body = item.body.strip()
+    if not body:
+        raise WorkItemError("the work item is empty")
+    fields: list[str] = []
+    for key in KEYS:
+        value = getattr(item, key)
+        if value is None:
+            continue
+        if not value.strip() or value != value.strip() or "\n" in value or "\r" in value:
+            raise WorkItemError(f"{key!r} must be one line of text with no spaces around it")
+        fields.append(f"{key}: {value}")
+    # A body whose first line is '---' would read as front matter: give it an empty block.
+    if fields or body.splitlines()[0].strip() == FENCE:
+        return "\n".join([FENCE, *fields, FENCE, body]) + "\n"
+    return body + "\n"
+
+
+def salvage_work_item(text: str) -> tuple[dict[str, str], str]:
+    """Best-effort split of a file ``parse_work_item`` rejects, so an editor can open it to fix
+    it: the known front-matter keys it can read (first value wins), and the body. Front matter
+    that never closes is left in the body."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != FENCE:
+        return {}, text.strip()
+    end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == FENCE), None)
+    if end is None:
+        return {}, text.strip()
+    fields: dict[str, str] = {}
+    for raw in lines[1:end]:
+        match = _LINE.fullmatch(raw.strip())
+        if match and match.group(1) in KEYS and match.group(2).strip():
+            fields.setdefault(match.group(1), match.group(2).strip())
+    return fields, "\n".join(lines[end + 1 :]).strip()

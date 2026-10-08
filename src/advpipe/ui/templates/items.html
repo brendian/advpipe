@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{#- The work-items list, grouped by folder. File names and text come from the folder and are
+    autoescaped like everything else. #}
+{% block title %}Work items{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Work items</h1>
+  <a class="button primary" href="/items/new">New work item</a>
+</div>
+<p class="lead">The task files in <code>{{ items_dir }}/</code> that you give to <code>advpipe run --item</code>.
+  Saving here writes the file; committing it to git is up to you.</p>
+{%- if deleted %}
+<p class="notice" role="status">Deleted <code>{{ deleted }}</code>.</p>
+{%- endif %}
+
+{%- if not listing.folder_exists %}
+<div class="empty">
+  <p>There's no <code>{{ items_dir }}/</code> folder in this repo yet.</p>
+  <p><a href="/items/new">Write your first work item</a> and the folder is made for you.</p>
+</div>
+{%- elif not listing.count %}
+<div class="empty">
+  <p>No work items in <code>{{ items_dir }}/</code> yet. A work item is a markdown file describing one feature or fix.</p>
+  <p><a href="/items/new">Write one</a>.</p>
+</div>
+{%- else %}
+{%- if not listing.git_known %}
+<p class="muted">Git status isn't shown: <code>{{ items_dir }}/</code> isn't inside a git repository.</p>
+{%- endif %}
+{%- for folder, rows in listing.groups %}
+<section class="item-group">
+  <h2>{% if folder %}<code>{{ folder }}/</code>{% else %}Top level{% endif %}
+    <a class="small" href="/items/new{% if folder %}?{{ {'folder': folder} | urlencode }}{% endif %}">+ new here</a></h2>
+  <table class="items-table">
+    <thead>
+      <tr><th scope="col">Work item</th><th scope="col">Last run</th><th scope="col">Git</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
+    </thead>
+    <tbody>
+      {%- for row in rows %}
+      {%- set q = {"path": row.rel} | urlencode %}
+      <tr>
+        <td>
+          <div class="title"><a href="/items/edit?{{ q }}">{{ row.title }}</a></div>
+          <div class="sub"><code>{{ row.filename }}</code>
+            {%- if row.name %} · branch name <code>{{ row.name }}</code>{% endif %}
+            {%- if row.config %} · config <code>{{ row.config }}</code>{% endif %}</div>
+          {%- if row.problem %}
+          <div class="warning small">Can't be run as it is: {{ row.problem }}</div>
+          {%- endif %}
+        </td>
+        <td>
+          {%- if row.last_run %}
+          {%- set info = statuses[row.last_run.status] %}
+          <a href="/runs/{{ row.last_run.run_id }}" class="chip chip-{{ row.last_run.status }}" title="{{ info.help }}">{{ info.icon }} {{ info.label }}</a>
+          <div class="sub muted">{{ row.last_run.age }}</div>
+          {%- else %}
+          <span class="muted">never run</span>
+          {%- endif %}
+        </td>
+        <td>
+          {%- if row.git_info %}
+          <span class="tag tag-minor" title="{{ row.git_info.help }}">{{ row.git_info.label }}</span>
+          {%- elif listing.git_known %}
+          <span class="muted" title="Committed, with no changes since.">committed</span>
+          {%- endif %}
+        </td>
+        <td class="actions">
+          <a href="/items/edit?{{ q }}">Edit</a>
+          <a href="/items/rename?{{ q }}">Rename</a>
+          <a href="/items/delete?{{ q }}" class="danger-link">Delete</a>
+        </td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+</section>
+{%- endfor %}
+{%- endif %}
+
+{%- if listing.skipped %}
+<p class="warning">Not shown, because their paths can't be managed here (odd characters, or a symlink
+  that leads out of the folder): {{ listing.skipped | join(", ") }}.</p>
+{%- endif %}
+{% endblock %}

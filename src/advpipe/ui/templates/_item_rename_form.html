@@ -1,0 +1,15 @@
+<form id="rename-form" class="item-form" method="post" action="/items/rename"
+      hx-post="/items/rename" hx-target="this" hx-swap="outerHTML">
+  {%- if error %}
+  <div class="form-errors" role="alert"><p>{{ error }}</p></div>
+  {%- endif %}
+  <input type="hidden" name="path" value="{{ rel }}">
+  <label class="field"><span>New file name</span>
+    <input name="new_path" value="{{ new_rel }}" required maxlength="300" autocomplete="off" spellcheck="false">
+    <small>Inside <code>{{ items_dir }}/</code>; <code>.md</code> is added if you leave it off.</small>
+  </label>
+  <div class="form-actions">
+    <button type="submit" class="button primary">Rename</button>
+    <a href="/items/edit?{{ q }}">Cancel</a>
+  </div>
+</form>

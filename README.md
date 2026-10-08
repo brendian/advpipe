@@ -424,8 +424,28 @@ A file the run hasn't written (yet) says so, and what that means.
   `--i-know-this-is-exposed`. Don't: the UI will be able to start runs, which spend money and run
   commands.
 - One repo per `advpipe ui`. To watch several repos, start one per repo on different ports.
-- `--items-dir` is where your work-item files live, relative to the repo. (Managing them from the
-  UI comes in a later version; see [docs/UI_PLAN.md](docs/UI_PLAN.md).)
+- `--items-dir` is where your work-item files live, relative to the repo (default
+  `work-items`). See *Work items* below.
+
+**Work items** (the *Work items* tab) lists the `.md` files in `--items-dir`, grouped by folder.
+Each shows its first line, its branch name and config if the front matter sets them, its last
+run's status (for runs started with `--item`; click it to open the run), and whether git has
+it: *not in git*, *uncommitted* (changed since the last commit), *ignored*, or committed.
+
+- **New** and **Edit** open an editor: the file name (new items only; folders are made as
+  needed and `.md` is added), the **branch name** and **pipeline config** (saved as front
+  matter), and the markdown body, with a live preview. Checks run as you type: an empty body
+  or a field with a line break can't be saved; a config file that's missing or has errors,
+  or a branch that already exists, gets a warning.
+- **Save** writes the file and nothing else; committing it is up to you. If nothing changed,
+  the file is left exactly as it was. If the file was changed on disk after you opened it
+  (say, in your text editor), saving is refused so those changes aren't overwritten.
+- **Rename** moves a file, also into another folder. **Delete** asks first, and says whether
+  git still has a copy. Runs keep their own copy of the work item, so neither affects them.
+- Only `.md` files inside the folder can be opened or changed: paths with `..`, absolute paths,
+  hidden files, and symlinks that lead out of the folder are refused.
+- Starting a run from the UI comes in a later version; the editor shows the
+  `advpipe run --item` command to copy meanwhile.
 
 ### `advpipe gates`
 

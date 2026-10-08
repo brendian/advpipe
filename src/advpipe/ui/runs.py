@@ -74,6 +74,7 @@ class RunRow:
     budget_usd: float | None
     started_at: datetime
     age: str
+    work_item_file: str = ""  # absolute path, for runs started with --item
 
     @property
     def info(self) -> StatusInfo:
@@ -170,6 +171,7 @@ def load_runs(repo: Path, now: datetime | None = None) -> RunList:
                 budget_usd=cfg.limits.budget_usd_per_task if cfg else None,
                 started_at=state.started_at,
                 age=age(state.started_at, now),
+                work_item_file=state.work_item_file,
             )
         )
     rows.sort(key=lambda r: r.started_at, reverse=True)
