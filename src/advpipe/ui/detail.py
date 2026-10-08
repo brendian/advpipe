@@ -194,7 +194,8 @@ class RunDetail:
 # --------------------------------------------------------------------------- file readers
 
 
-def _text(path: Path) -> str | None:
+def read_text(path: Path) -> str | None:
+    """The file's text, or None if it doesn't exist (yet)."""
     try:
         return path.read_text(errors="replace")
     except (FileNotFoundError, IsADirectoryError):
@@ -206,7 +207,7 @@ def _rel(log: RunLog, path: Path) -> str:
 
 
 def _diff(log: RunLog, path: Path) -> DiffView | None:
-    text = _text(path)
+    text = read_text(path)
     if text is None:
         return None
     all_lines = text.splitlines()
@@ -228,7 +229,7 @@ def _diff(log: RunLog, path: Path) -> DiffView | None:
 
 def _gates(log: RunLog, path: Path) -> GatesView | None:
     """A gates.json (a list of results) or scanner.json (one result)."""
-    text = _text(path)
+    text = read_text(path)
     if text is None:
         return None
     try:
@@ -240,7 +241,7 @@ def _gates(log: RunLog, path: Path) -> GatesView | None:
 
 
 def _critic(log: RunLog, path: Path, role: str) -> CriticView | None:
-    raw = _text(path)
+    raw = read_text(path)
     if raw is None:
         return None
     try:
@@ -251,7 +252,7 @@ def _critic(log: RunLog, path: Path, role: str) -> CriticView | None:
 
 
 def _reply(path: Path) -> Markup | None:
-    text = _text(path)
+    text = read_text(path)
     return markdown(text) if text is not None else None
 
 
@@ -315,7 +316,7 @@ def _arbiter_rounds(log: RunLog) -> list[RoundView]:
     """Raw arbiter replies that couldn't be parsed, and the final author passes."""
     rounds = []
     for label in ("tests", "code", "review"):
-        raw = _text(log.root / f"arbiter-{label}.json")
+        raw = read_text(log.root / f"arbiter-{label}.json")
         if raw is not None:
             try:
                 parse_model(raw, ArbiterRuling)
@@ -405,7 +406,7 @@ def build_timeline(log: RunLog, state: RunState, cfg: Config | None, live: bool)
             reply = _reply(log.root / "spec" / "author.txt")
             if reply is not None:
                 rounds = [RoundView(title="Spec writer", author_role="spec writer", author=reply)]
-            task_text = _text(log.root / "task.md")
+            task_text = read_text(log.root / "task.md")
             task_md = markdown(task_text) if task_text is not None else None
         elif stage is Stage.TESTS:
             rounds = _loop_rounds(log, "tests")
@@ -515,7 +516,7 @@ def load_detail(repo: Path, run_id: str) -> RunDetail | None:
         cfg = None
     status = display_status(state, log)
     budget = cfg.limits.budget_usd_per_task if cfg else None
-    report = _text(log.root / "report.md")
+    report = read_text(log.root / "report.md")
     return RunDetail(
         run_id=state.run_id,
         state=state,

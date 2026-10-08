@@ -249,3 +249,40 @@ pre.diff { max-height: 40rem; line-height: 1.35; }
 .ev-stage .ev-msg, .ev-status .ev-msg { font-weight: 600; }
 .ev-verdict .ev-msg, .ev-ruling .ev-msg { color: var(--accent); }
 .log-panel > .muted { padding: 0 0.75rem; }
+
+/* Run tabs: Progress, Spec & context */
+.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin: 0.5rem 0 1rem; }
+.tabs a {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted);
+  text-decoration: none;
+  margin-bottom: -1px;
+}
+.tabs a[aria-current="page"] {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--border);
+  font-weight: 600;
+}
+
+/* Spec & context */
+.ctx-block { border-top: 1px solid var(--border); padding-top: 0.5rem; margin-top: 1.25rem; }
+.seen-by {
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  padding: 0.35rem 0.6rem;
+  font-size: 0.9em;
+}
+.doc { border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.9rem; }
+.task-counts { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.task-md h2.task-ac, .task-md h2.task-oq { color: var(--accent); }
+.task-md li.ac { border-left: 3px solid var(--complete); padding-left: 0.4rem; margin: 0.2rem 0; }
+.task-md li.oq { border-left: 3px solid var(--attention); padding-left: 0.4rem; margin: 0.2rem 0; }
+.task-md li.oq.blocking { border-left-color: var(--danger); color: var(--danger); font-weight: 600; }
+.checks { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
+.checks th { text-align: left; color: var(--muted); font-size: 0.85em; font-weight: 600; }
+.checks th, .checks td { padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.role > summary { padding: 0.2rem 0; }

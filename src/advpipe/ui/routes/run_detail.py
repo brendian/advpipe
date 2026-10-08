@@ -1,18 +1,24 @@
-"""The run detail page, its refreshable fragment, and the live event stream."""
+"""The run detail page, its refreshable fragment, the live event stream, and the spec &
+context tab."""
 
 from __future__ import annotations
 
-from typing import Annotated
+from collections.abc import Callable
+from pathlib import Path
+from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 from advpipe.runlog import EVENTS_FILE, RunLog, check_run_id
 from advpipe.ui import live
+from advpipe.ui.context import load_context
 from advpipe.ui.detail import RunDetail, load_detail
 from advpipe.ui.state import ui_config
 
 router = APIRouter()
+
+T = TypeVar("T")
 
 
 def _error(request: Request, status_code: int, title: str, message: str) -> HTMLResponse:
@@ -24,14 +30,16 @@ def _error(request: Request, status_code: int, title: str, message: str) -> HTML
     )
 
 
-def _load(request: Request, run_id: str) -> RunDetail | HTMLResponse:
-    """The run's detail, or an error page saying why there isn't one."""
+def _load(
+    request: Request, run_id: str, loader: Callable[[Path, str], T | None]
+) -> T | HTMLResponse:
+    """What ``loader`` reads for the run, or an error page saying why there's nothing."""
     try:
         check_run_id(run_id)
     except ValueError:
         return _error(request, 404, "No such run", "That isn't a valid run id.")
     try:
-        detail = load_detail(ui_config(request).repo, run_id)
+        detail = loader(ui_config(request).repo, run_id)
     except ValueError as e:
         return _error(request, 500, "Can't read this run", f"run.json couldn't be parsed: {e}")
     except OSError as e:
@@ -51,7 +59,7 @@ def _context(detail: RunDetail) -> dict[str, object]:
 
 @router.get("/runs/{run_id}", response_class=HTMLResponse)
 def run_page(request: Request, run_id: str) -> HTMLResponse:
-    detail = _load(request, run_id)
+    detail = _load(request, run_id, load_detail)
     if isinstance(detail, HTMLResponse):
         return detail
     log = RunLog.for_run(ui_config(request).repo, run_id)
@@ -60,7 +68,23 @@ def run_page(request: Request, run_id: str) -> HTMLResponse:
     return ui_config(request).templates.TemplateResponse(
         request,
         "run.html",
-        {**_context(detail), "events": [e.html() for e in events], "offset": offset},
+        {
+            **_context(detail),
+            "events": [e.html() for e in events],
+            "offset": offset,
+            "tab": "progress",
+        },
+    )
+
+
+@router.get("/runs/{run_id}/context", response_class=HTMLResponse)
+def run_context(request: Request, run_id: str) -> HTMLResponse:
+    """The spec & context tab: everything the agents worked from, and who sees what."""
+    ctx = _load(request, run_id, load_context)
+    if isinstance(ctx, HTMLResponse):
+        return ctx
+    return ui_config(request).templates.TemplateResponse(
+        request, "run_context.html", {"c": ctx, "tab": "context", "nav_current": "/"}
     )
 
 
@@ -68,7 +92,7 @@ def run_page(request: Request, run_id: str) -> HTMLResponse:
 def run_fragment(request: Request, run_id: str) -> HTMLResponse:
     """The header (swapped in place) plus the timeline and report (swapped out of band).
     Re-fetched by the page on each ``refresh`` event of the live stream."""
-    detail = _load(request, run_id)
+    detail = _load(request, run_id, load_detail)
     if isinstance(detail, HTMLResponse):
         return detail
     return ui_config(request).templates.TemplateResponse(

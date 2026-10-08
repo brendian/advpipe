@@ -2,6 +2,7 @@
 {% block title %}{{ d.title }}{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/">← All runs</a></p>
+{% with run_id = d.run_id %}{% include "_run_tabs.html" %}{% endwith %}
 {#- While the run is live, one SSE connection feeds the log and tells the header and timeline
     when to refresh; it closes on the stream's `end` event. #}
 <div id="run"{% if d.live %} hx-ext="sse" sse-connect="/runs/{{ d.run_id }}/events?offset={{ offset }}" sse-close="end"{% endif %}>
