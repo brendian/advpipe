@@ -58,6 +58,8 @@ class Orchestrator:
         *,
         keep_worktree: bool = False,
         state: RunState | None = None,
+        progress: Callable[[str], None] | None = None,
+        name: str | None = None,
     ) -> None:
         self.config = config
         self.runner = runner
@@ -75,6 +77,8 @@ class Orchestrator:
             self.state.calls_by_stage,
         )
         self.ctx: Context | None = None
+        self.progress: Callable[[str], None] = progress or (lambda message: None)
+        self.name = name
 
     @classmethod
     def resume(
@@ -86,6 +90,7 @@ class Orchestrator:
         config: Config | None = None,
         budget_usd: float | None = None,
         keep_worktree: bool = False,
+        progress: Callable[[str], None] | None = None,
     ) -> Orchestrator:
         """Reload an interrupted run from run.json. Uses the run's saved config by default."""
         runlog = RunLog.for_run(repo.resolve(), run_id)
@@ -101,7 +106,15 @@ class Orchestrator:
         if budget_usd is not None:
             limits = cfg.limits.model_copy(update={"budget_usd_per_task": budget_usd})
             cfg = cfg.model_copy(update={"limits": limits})
-        return cls(cfg, runner, repo, state.work_item, keep_worktree=keep_worktree, state=state)
+        return cls(
+            cfg,
+            runner,
+            repo,
+            state.work_item,
+            keep_worktree=keep_worktree,
+            state=state,
+            progress=progress,
+        )
 
     async def run(self) -> RunState:
         self.runlog.acquire_lock()
@@ -110,14 +123,17 @@ class Orchestrator:
         except BudgetExceeded as e:
             self.state.status = Status.BUDGET_EXCEEDED
             self.state.notes.append(str(e))
+            self.progress(str(e))
         except asyncio.CancelledError:
             # Interrupted (e.g. Ctrl-C): status stays "running" so the run can be resumed.
             self.state.notes.append(f"Interrupted during {self.state.stage.value}")
+            self.progress(f"interrupted; resume with: advpipe resume {self.run_id}")
             raise
         except Exception as e:  # noqa: BLE001 - any failure must end in a recorded state
             log.exception("run %s failed", self.run_id)
             self.state.status = Status.ERROR
             self.state.notes.append(f"{type(e).__name__}: {e}")
+            self.progress(f"error: {type(e).__name__}: {e}")
         finally:
             self.state.cost_usd = self.budget.spent
             self.state.cost_by_stage = dict(self.budget.by_stage)
@@ -128,6 +144,7 @@ class Orchestrator:
         return self.state
 
     def _enter(self, stage: Stage) -> None:
+        self.progress(f"== {stage.value}")
         self.state.stage = stage
         self.state.round = 0
         self.runlog.write_state(self.state)
@@ -140,14 +157,18 @@ class Orchestrator:
     def _open_workspace(self) -> Workspace:
         if self.state.branch:
             self.state.notes.append(f"Resumed at stage {self.state.stage.value}")
+            self.progress(f"resuming run {self.run_id} at stage {self.state.stage.value}")
             self.state.status = Status.RUNNING
             self.state.open_findings = []
             return Workspace.reopen(self.repo, Path(self.state.worktree), self.state.branch)
         self.runlog.write_config(self.config)
-        ws = Workspace.create(self.repo, self.run_id)
+        # Readable branch: from --name if given, else from the work item's first line.
+        ws = Workspace.create(self.repo, self.run_id, self.name or self.state.work_item)
         self.state.worktree = str(ws.path)
         self.state.branch = ws.branch
         self.state.base_commit = ws.head()
+        self.progress(f"run {self.run_id} started; branch {ws.branch}")
+        self.progress(f"worktree: {ws.path}")
         return ws
 
     async def _run(self) -> None:
@@ -160,6 +181,7 @@ class Orchestrator:
             budget=self.budget,
             runlog=self.runlog,
             state=self.state,
+            progress=self.progress,
         )
         done = self.state.commits
 

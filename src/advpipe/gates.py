@@ -143,5 +143,14 @@ def red_gate_findings(result: GateResult, new_test_files: list[str]) -> list[Fin
     return []
 
 
+def gates_line(results: list[GateResult]) -> str:
+    """One-line summary for progress output, e.g. 'test FAIL, types pass, lint skipped'."""
+    parts = []
+    for r in results:
+        status = "skipped" if r.skipped else ("pass" if r.passed else "FAIL")
+        parts.append(f"{r.name} {status}")
+    return ", ".join(parts) or "none configured"
+
+
 def format_gates(results: list[GateResult]) -> str:
     return "\n\n".join(r.summary() for r in results) or "(no gates run)"

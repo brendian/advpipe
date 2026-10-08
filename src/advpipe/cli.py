@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -21,6 +24,7 @@ RepoOpt = Annotated[Path, typer.Option(help="Target git repository.")]
 ConfigOpt = Annotated[
     Path | None, typer.Option(help="pipeline.toml (default: <repo>/pipeline.toml).")
 ]
+QuietOpt = Annotated[bool, typer.Option("--quiet", "-q", help="Don't print live progress.")]
 KeepOpt = Annotated[
     bool, typer.Option(help="Keep the worktree after a successful run (it's removed by default).")
 ]
@@ -31,9 +35,27 @@ def main() -> None:
     """Adversarial multi-agent coding pipeline."""
 
 
+def make_progress(quiet: bool, label: str = "") -> Callable[[str], None]:
+    """Progress printer: timestamped lines on stderr (stdout stays for the final summary)."""
+    if quiet:
+        return lambda message: None
+    prefix = f"[{label}] " if label else ""
+
+    def emit(message: str) -> None:
+        print(f"{datetime.now():%H:%M:%S} {prefix}{message}", file=sys.stderr, flush=True)
+
+    return emit
+
+
 def _summary(state: RunState, runlog: RunLog) -> None:
     typer.echo(f"{state.run_id}  {state.status.value}  ${state.cost_usd:.2f}  {state.branch}")
     typer.echo(f"  report: {runlog.root / 'report.md'}")
+
+
+def _short(text: str, width: int) -> str:
+    """First line of ``text``, cut to ``width`` characters."""
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    return first if len(first) <= width else first[: width - 3] + "..."
 
 
 def _read_items(path: Path) -> list[str]:
@@ -53,6 +75,13 @@ def run(
     ] = None,
     parallel: Annotated[int, typer.Option(min=1, help="Work items to run at once.")] = 1,
     keep_worktree: KeepOpt = False,
+    quiet: QuietOpt = False,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            help="Branch name: advpipe/<name>. Default: derived from the work item's first line."
+        ),
+    ] = None,
 ) -> None:
     """Drive work items through the pipeline, leaving a branch per item for human review."""
     if from_file is not None and work_item is None:
@@ -61,11 +90,23 @@ def run(
         items = [work_item]
     else:
         raise typer.BadParameter("give exactly one of WORK_ITEM or --from-file")
+    if name is not None and len(items) > 1:
+        raise typer.BadParameter("--name works with a single work item, not --from-file")
     cfg = load_config(config, repo)
     orchestrators: list[Orchestrator] = []
 
     def make(item: str) -> Orchestrator:
-        orch = Orchestrator(cfg, SdkAgentRunner(), repo, item, keep_worktree=keep_worktree)
+        # Several runs share the terminal: prefix their lines with "item N" to tell them apart.
+        label = f"item {len(orchestrators) + 1}" if len(items) > 1 else ""
+        orch = Orchestrator(
+            cfg,
+            SdkAgentRunner(),
+            repo,
+            item,
+            keep_worktree=keep_worktree,
+            progress=make_progress(quiet, label),
+            name=name,
+        )
         orchestrators.append(orch)
         return orch
 
@@ -85,6 +126,7 @@ def resume(
         float | None, typer.Option(help="New per-task budget in USD (e.g. after budget_exceeded).")
     ] = None,
     keep_worktree: KeepOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Resume an interrupted run at the first stage that didn't finish."""
     cfg = load_config(config) if config else None
@@ -96,6 +138,7 @@ def resume(
             config=cfg,
             budget_usd=budget,
             keep_worktree=keep_worktree,
+            progress=make_progress(quiet),
         )
     except NotResumable as e:
         typer.echo(str(e), err=True)
@@ -118,7 +161,7 @@ def status(
             typer.echo("no runs")
         for s in runs:
             active = " (active)" if RunLog.for_run(repo, s.run_id).lock_holder() else ""
-            item = s.work_item if len(s.work_item) <= 50 else s.work_item[:47] + "..."
+            item = _short(s.work_item, 50)
             typer.echo(
                 f"{s.run_id}  {s.status.value + active:<16} {s.stage.value:<12} "
                 f"${s.cost_usd:>6.2f}  {item}"
@@ -134,7 +177,7 @@ def status(
         f"run:      {s.run_id}",
         f"status:   {s.status.value}" + (f" (active, pid {holder})" if holder else ""),
         f"stage:    {s.stage.value}" + (f" round {s.round}" if s.round else ""),
-        f"item:     {s.work_item}",
+        f"item:     {_short(s.work_item, 100)}",
         f"branch:   {s.branch}",
         f"cost:     ${s.cost_usd:.2f}",
         f"done:     {', '.join(s.commits) or '-'}",

@@ -33,3 +33,43 @@ def test_changed_files_and_restore(target_repo: Path) -> None:
     assert not (ws.path / "tests" / "test_new.py").exists()
     assert "def test_mean" in (ws.path / "tests" / "test_core.py").read_text()
     assert ws.changed_files(base) == ["mathutils/core.py"]
+
+
+import pytest  # noqa: E402
+
+from advpipe.workspace import slugify  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("text", "slug"),
+    [
+        ("add a clamp(x, lo, hi) function", "add-clamp-x-lo-hi-function"),
+        (
+            "Create the SQLite storage layer for the homeinv server in a new module `db.py`.\n\n"
+            "- details that must be ignored",
+            "create-sqlite-storage-layer-homeinv",
+        ),
+        ("\n\n  Fix the refund rounding bug  \n", "fix-refund-rounding-bug"),
+        ("The", "the"),  # only filler words: keep them rather than return nothing
+        ("!!!", "work"),
+        ("x" * 60, "x" * 40),
+        ("Ümlaut café support", "mlaut-caf-support"),
+    ],
+)
+def test_slugify(text: str, slug: str) -> None:
+    assert slugify(text) == slug
+    assert len(slug) <= 40
+
+
+def test_branch_named_from_work_item_with_collision_suffix(target_repo: Path) -> None:
+    first = Workspace.create(target_repo, "w1", "Fix the refund rounding bug")
+    second = Workspace.create(target_repo, "w2", "Fix the refund rounding bug")
+    third = Workspace.create(target_repo, "w3", "fix refund rounding bug!")
+    assert first.branch == "advpipe/fix-refund-rounding-bug"
+    assert second.branch == "advpipe/fix-refund-rounding-bug-2"
+    assert third.branch == "advpipe/fix-refund-rounding-bug-3"
+    assert first.path.name == "w1"  # worktree dirs stay keyed by run id
+
+
+def test_branch_defaults_to_run_id_without_name(target_repo: Path) -> None:
+    assert Workspace.create(target_repo, "r42").branch == "advpipe/r42"

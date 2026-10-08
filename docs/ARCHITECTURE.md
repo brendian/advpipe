@@ -108,7 +108,8 @@ ran out of money.
 
 ### 0. Set up the workspace (`Orchestrator._open_workspace`)
 A new run calls `Workspace.create`. That makes a git worktree at
-`<repo>/.advpipe/worktrees/<run-id>` on a new branch `advpipe/<run-id>`, starting from the
+`<repo>/.advpipe/worktrees/<run-id>` on a new, human-readable branch (see
+[isolation](#isolation-worktrees-and-branches)), starting from the
 repo's current `HEAD`. It also saves the effective config to `config.json` in the run directory.
 A resumed run calls `Workspace.reopen` instead (see [resume](#persistence-resume-and-locking)).
 
@@ -293,7 +294,11 @@ It returns the final text plus `total_cost_usd` from the SDK's `ResultMessage`.
 
 `workspace.py` wraps git. **advpipe never touches your working tree.**
 
-- `Workspace.create` runs `git worktree add -b advpipe/<run-id> .advpipe/worktrees/<run-id> HEAD`.
+- `Workspace.create` runs `git worktree add -b <branch> .advpipe/worktrees/<run-id> HEAD`. The
+  branch comes from `unique_branch`: `advpipe/` plus `slugify` of `--name` or the work item's
+  first line (lowercase words, filler words dropped, cut at a word boundary to 40 characters),
+  with `-2`, `-3`, ... appended if it already exists. Worktree directories and run logs stay
+  keyed by run id.
   `_exclude_advpipe_dir` adds `.advpipe/` to `.git/info/exclude`, a local ignore file that isn't
   tracked, so run artifacts never show up in your `git status`.
 - `Workspace.diff` stages new files with `git add --intent-to-add` first, so brand-new files show

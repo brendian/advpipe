@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar
 
@@ -17,6 +19,7 @@ from advpipe.gates import (
     GateResult,
     format_gates,
     gate_findings,
+    gates_line,
     red_gate_findings,
     run_gate,
     run_gates,
@@ -43,6 +46,10 @@ ALL_GATES = ["test", "types", "lint"]
 M = TypeVar("M", bound=BaseModel)
 
 
+def _no_progress(message: str) -> None:
+    pass
+
+
 @dataclass
 class Context:
     config: Config
@@ -53,6 +60,11 @@ class Context:
     state: RunState
     task_md: str = ""
     last_gates: list[GateResult] = field(default_factory=list)
+    progress: Callable[[str], None] = _no_progress
+
+    def emit(self, message: str) -> None:
+        """Report human-readable progress (printed live by the CLI)."""
+        self.progress(message)
 
     @property
     def spec_commit(self) -> str:
@@ -74,12 +86,26 @@ class Context:
 
 async def call_agent(ctx: Context, role: Role, prompt: str, stage: str) -> AgentResult:
     request = build_request(role, prompt, ctx.config, ctx.workspace.path, ctx.budget.remaining)
+    ctx.emit(f"{role.value} working ({request.model})...")
+    started = time.monotonic()
     result = await ctx.runner.run(request)
     try:
         ctx.budget.add(result.cost_usd, stage)
     finally:
         ctx.save()
+        error = " [agent reported an error]" if result.is_error else ""
+        ctx.emit(
+            f"{role.value} done in {time.monotonic() - started:.0f}s, ${result.cost_usd:.2f}"
+            f" (run total ${ctx.budget.spent:.2f}){error}"
+        )
     return result
+
+
+def _verdict_line(role: Role, verdict: Verdict) -> str:
+    return (
+        f"{role.value}: {verdict.verdict} "
+        f"({len(verdict.blocking)} blocking, {len(verdict.minor)} minor)"
+    )
 
 
 def extract_json(text: str) -> str:
@@ -298,6 +324,7 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
         rounds = rnd
         ctx.state.round = rnd
         ctx.save()
+        ctx.emit(f"round {rnd}/{cap}")
         rdir = f"{stage}/round-{rnd}"
 
         if rnd == 1:
@@ -318,12 +345,19 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
             ]
 
         guard = test_file_guard(ctx, base) if kind == "code" else []
+        if guard:
+            ctx.emit(f"test-file guard: coder edited tests ({guard[0].evidence})")
         gates, gate_f = await stage_gates(ctx, kind)
         ctx.last_gates = gates
+        expect = " (new tests should fail before implementation)" if kind == "tests" else ""
+        ctx.emit(f"gates: {gates_line(gates)}{expect}")
+        for f in gate_f:
+            ctx.emit(f"  blocking: {f.claim}")
 
         diff = ctx.workspace.diff(base, REVIEW_PATHS)
         prompt = critic_prompt(ctx, kind, label, diff, gates)
         verdict, raw = await call_critic(ctx, critic, prompt, stage)
+        ctx.emit(_verdict_line(critic, verdict))
         ctx.runlog.write_text(f"{rdir}/critic.json", raw)
         ctx.runlog.write_json(f"{rdir}/gates.json", gates)
 
@@ -343,6 +377,11 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
             break
 
     ctx.state.rounds_used[kind] = rounds
+    if for_arbiter or to_author:
+        reason = "round cap reached" if to_author else "disputed findings"
+        ctx.emit(f"{reason}: {len(for_arbiter) + len(to_author)} open finding(s) go to the arbiter")
+    else:
+        ctx.emit(f"{kind} stage passed in {rounds} round(s)")
     open_findings = for_arbiter + [Dispute(finding=f) for f in to_author]
     return StageResult(
         name=kind,
@@ -358,6 +397,7 @@ async def review_stage(ctx: Context) -> StageResult:
     scanner = await run_gate(
         "security", ctx.config.gates.security, ctx.workspace.path, ctx.config.limits.gate_timeout_s
     )
+    ctx.emit(f"security scanner: {gates_line([scanner])}")
     if scanner.skipped:
         ctx.state.notes.append(
             f"Security scanner not run ({scanner.skip_reason}); "
@@ -386,6 +426,8 @@ async def review_stage(ctx: Context) -> StageResult:
         call_critic(ctx, Role.STANDARDS_REVIEWER, std_prompt, "review"),
         call_critic(ctx, Role.SECURITY_REVIEWER, sec_prompt, "review"),
     )
+    ctx.emit(_verdict_line(Role.STANDARDS_REVIEWER, std))
+    ctx.emit(_verdict_line(Role.SECURITY_REVIEWER, sec))
     ctx.runlog.write_text("review/standards.json", std_raw)
     ctx.runlog.write_text("review/security.json", sec_raw)
 
@@ -443,6 +485,8 @@ async def arbiter_stage(ctx: Context, disputes: list[Dispute], label: str) -> li
                     reason="no ruling given; defaulting to fix",
                 )
             )
+    for r in rulings:
+        ctx.emit(f"  {r.finding_id}: {r.decision} ({r.reason})")
     return rulings
 
 
@@ -458,6 +502,7 @@ async def final_author_pass(
     guard = test_file_guard(ctx, ctx.tests_commit) if kind == "code" else []
     gates, gate_f = await stage_gates(ctx, kind)
     ctx.last_gates = gates
+    ctx.emit(f"gates after final pass: {gates_line(gates)}")
     ctx.runlog.write_json(f"final-pass-{kind}/gates.json", gates)
     return guard + gate_f
 

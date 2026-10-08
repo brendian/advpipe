@@ -36,7 +36,7 @@ def code_onward() -> dict[Role, list[Step]]:
 async def interrupted_at_code(config: Config, repo: Path) -> Orchestrator:
     scripts = happy_scripts()
     scripts[Role.CODE_CRITIC] = [interrupt]
-    orch = Orchestrator(config, FakeAgentRunner(scripts), repo, "add clamp", run_id="r1")
+    orch = Orchestrator(config, FakeAgentRunner(scripts), repo, "add clamp", run_id="r1", name="r1")
     with pytest.raises(asyncio.CancelledError):
         await orch.run()
     return orch

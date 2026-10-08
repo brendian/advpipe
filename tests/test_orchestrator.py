@@ -27,7 +27,9 @@ from advpipe.runner import Role
 
 
 async def run(config: Config, repo: Path, runner: FakeAgentRunner) -> tuple[RunState, Path]:
-    orch = Orchestrator(config, runner, repo, "add a clamp(x, lo, hi) function", run_id="t1")
+    orch = Orchestrator(
+        config, runner, repo, "add a clamp(x, lo, hi) function", run_id="t1", name="t1"
+    )
     state = await orch.run()
     return state, orch.runlog.root
 
@@ -345,3 +347,71 @@ async def test_report_has_cost_table(config: Config, target_repo: Path) -> None:
     report = (logdir / "report.md").read_text()
     assert "| review | 2 | $0.02 | 29% |" in report
     assert "| **total** | **7** | **$0.07** | |" in report
+
+
+async def test_progress_reports_each_step(config: Config, target_repo: Path) -> None:
+    lines: list[str] = []
+    orch = Orchestrator(
+        config,
+        FakeAgentRunner(happy_scripts()),
+        target_repo,
+        "w",
+        run_id="t1",
+        name="t1",
+        progress=lines.append,
+    )
+    await orch.run()
+
+    assert lines[0] == "run t1 started; branch advpipe/t1"
+    stages = [line for line in lines if line.startswith("== ")]
+    assert stages == ["== SPEC", "== TESTS", "== CODE", "== REVIEW", "== FINAL_GATES"]
+    text = "\n".join(lines)
+    for expected in (
+        "spec-writer working (claude-opus-5-5)...",
+        "test-critic: PASS (0 blocking, 0 minor)",
+        "gates: test FAIL (new tests should fail before implementation)",
+        "tests stage passed in 1 round(s)",
+        "code-critic: PASS (0 blocking, 0 minor)",
+        "security scanner: security skipped",
+        "security-reviewer: PASS (0 blocking, 0 minor)",
+    ):
+        assert expected in text, expected
+    assert "coder done in" in text and "(run total $0.04)" in text
+
+
+async def test_progress_reports_guard_and_arbiter(config: Config, target_repo: Path) -> None:
+    scripts = happy_scripts()
+    scripts[Role.CODER] = [
+        writes({**IMPL_OK, "tests/test_clamp.py": "def test_x() -> None:\n    pass\n"}),
+        "{}",
+        "{}",
+    ]
+    scripts[Role.CODE_CRITIC] = [verdict_fail(finding("F1", line=n)) for n in (1, 2, 3)]
+    scripts[Role.ARBITER] = [rulings(**{"C3-F1": "dismiss"})]
+    lines: list[str] = []
+    orch = Orchestrator(
+        config, FakeAgentRunner(scripts), target_repo, "w", run_id="t1", progress=lines.append
+    )
+    await orch.run()
+    text = "\n".join(lines)
+    assert "test-file guard: coder edited tests" in text
+    assert "round 3/3" in text
+    assert "round cap reached: 1 open finding(s) go to the arbiter" in text
+    assert "  C3-F1: dismiss (r)" in text
+
+
+async def test_branch_named_after_work_item(config: Config, target_repo: Path) -> None:
+    item = "Create the SQLite storage layer for the homeinv server.\n\n- lots of detail"
+    state = await Orchestrator(config, FakeAgentRunner(happy_scripts()), target_repo, item).run()
+    assert state.status is Status.COMPLETE
+    assert state.branch == "advpipe/create-sqlite-storage-layer-homeinv"
+    assert state.branch in git(target_repo, "branch", "--list", "advpipe/*")
+    report = (target_repo / ".advpipe" / "runs" / state.run_id / "report.md").read_text()
+    assert f"`{state.branch}`" in report
+
+
+async def test_name_overrides_branch(config: Config, target_repo: Path) -> None:
+    runner = FakeAgentRunner(happy_scripts())
+    orch = Orchestrator(config, runner, target_repo, "anything", name="S01 database")
+    state = await orch.run()
+    assert state.branch == "advpipe/s01-database"

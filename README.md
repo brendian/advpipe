@@ -8,7 +8,7 @@ advpipe run --repo ~/code/myproject "add a clamp(x, lo, hi) function to mathutil
 ```
 
 ```
-20261008-025103-397075  complete  $0.41  advpipe/20261008-025103-397075
+20261008-025103-397075  complete  $0.41  advpipe/add-clamp-x-lo-hi-function
   report: ~/code/myproject/.advpipe/runs/20261008-025103-397075/report.md
 ```
 
@@ -195,11 +195,11 @@ The code critic found nothing blocking.
 **5. Result:**
 
 ```
-20261008-025103-397075  complete  $0.41  advpipe/20261008-025103-397075
+20261008-025103-397075  complete  $0.41  advpipe/add-clamp-x-lo-hi-function
 ```
 
 ```sh
-$ git log --oneline main..advpipe/20261008-025103-397075
+$ git log --oneline main..advpipe/add-clamp-x-lo-hi-function
 1305504 advpipe: implementation
 1cc1e52 advpipe: tests
 9ebc6ff advpipe: spec (task.md)
@@ -210,11 +210,14 @@ was the most expensive part, and the spec was next.
 
 ## Reviewing the result
 
-Every run leaves a branch named `advpipe/<run-id>` and a report. You're the final reviewer.
+Every run leaves a branch and a report. You're the final reviewer. The branch is named after
+the task, e.g. "add a clamp(x, lo, hi) function" becomes `advpipe/add-clamp-x-lo-hi-function`, or
+you choose it with `--name`. The final summary and the report both show it.
 
 ```sh
 advpipe report <run-id> --repo path/to/project     # read the report
-git -C path/to/project log -p main..advpipe/<run-id> # read the change, stage by stage
+git -C path/to/project log -p main..advpipe/<branch> # read the change, stage by stage
+git -C path/to/project merge advpipe/<branch>       # accept it
 ```
 
 **What's in the report:**
@@ -239,7 +242,7 @@ git -C path/to/project log -p main..advpipe/<run-id> # read the change, stage by
 to delete `task.md` first, or keep it as documentation.
 
 **Cleaning up:** after a `complete` run the working copy is removed automatically, so only the
-branch is left. Delete the branch with `git branch -D advpipe/<run-id>` when you're done. Run
+branch is left. Delete the branch with `git branch -D advpipe/<branch>` when you're done. Run
 logs live in `.advpipe/` in your project. That folder is excluded from git automatically, and
 you can delete it at any time.
 
@@ -250,7 +253,7 @@ you can delete it at any time.
 Run one or more tasks.
 
 ```sh
-advpipe run "task description" [--repo PATH] [--config FILE] [--keep-worktree]
+advpipe run "task description" [--repo PATH] [--config FILE] [--name NAME] [--keep-worktree]
 advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
 ```
 
@@ -260,7 +263,17 @@ advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
   are skipped.
 - `--parallel N`: with `--from-file`, run up to N tasks at once. Each task gets its own branch,
   working copy and budget, so they don't interfere.
+- `--name NAME`: name the branch `advpipe/NAME`. By default the name comes from the task's first
+  line, with filler words dropped and cut to 40 characters (`advpipe/fix-refund-rounding-bug`).
+  If that branch already exists, `-2`, `-3`, ... is appended.
 - `--keep-worktree`: don't delete the working copy after a successful run.
+- `--quiet` / `-q`: don't print live progress.
+
+While it runs, advpipe prints timestamped progress to stderr: each stage, each agent starting
+and finishing (with its cost and the run total so far), check results, critic verdicts and
+arbiter rulings. With several tasks, each line is prefixed with `[item N]`. When the run
+finishes, a one-line summary per task goes to stdout, so `advpipe run ... > result.txt` captures
+just the summary.
 
 Exit code: 0 if every task completed, 1 otherwise.
 
@@ -285,7 +298,7 @@ Prints the run's `report.md`.
 ### `advpipe resume`
 
 ```sh
-advpipe resume <run-id> [--repo PATH] [--budget USD] [--config FILE]
+advpipe resume <run-id> [--repo PATH] [--budget USD] [--config FILE] [--quiet]
 ```
 
 Continue a run that was interrupted (Ctrl-C, crash, closed laptop), stopped by an error, or ran
