@@ -22,6 +22,16 @@ understand the diff.
 Failed gates are already blocking findings; you don't need to restate them. Do not re-litigate
 choices that `task.md` settles.
 
+## When a failing test is itself wrong
+
+The coder can't edit tests. If a test fails because **the test is defective**, not because the
+implementation is wrong, report it with `"category": "test-defect"`, the test's `file` and
+`line`, and evidence showing why the test can never pass with a correct implementation.
+Examples: invalid SQL or syntax in the test, a wrong expected value that contradicts `task.md`,
+or a broken fixture. The test then goes back to the test author for one fix pass, and the gates
+are re-run. Use this only when you're sure: a test that correctly catches a bug is never a
+test defect.
+
 ## Output
 
 Reply with JSON only, matching this Verdict schema:
@@ -33,7 +43,7 @@ Reply with JSON only, matching this Verdict schema:
     {
       "id": "F1",
       "severity": "blocking | minor",
-      "category": "correctness | coverage | standards | security | scope",
+      "category": "correctness | coverage | standards | security | scope | test-defect",
       "file": "billing/refund.py",
       "line": 42,
       "criterion": "AC2",

@@ -9,6 +9,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -293,6 +294,72 @@ def _prefix(findings: list[Finding], prefix: str) -> list[Finding]:
     return [f.model_copy(update={"id": f"{prefix}{f.id}"}) for f in findings]
 
 
+def _in_paths(file: str, paths: list[str]) -> bool:
+    return any(file == p.rstrip("/") or file.startswith(p.rstrip("/") + "/") for p in paths)
+
+
+def _read_bytes(path: Path) -> bytes | None:
+    return path.read_bytes() if path.is_file() else None
+
+
+async def test_fix_pass(
+    ctx: Context, defects: list[Finding], gates: list[GateResult], tests_base: str, rdir: str
+) -> str:
+    """Send tests the code critic says are defective back to the test author, once.
+
+    The test author may only change files under the test paths; anything else it touches is
+    put back. Changed tests are committed on their own, and that commit becomes the new
+    baseline for the coder's test-file guard. Returns the new baseline commit.
+    """
+    ws, paths = ctx.workspace, ctx.config.paths.tests
+    head = ws.head()
+    before = {
+        f: _read_bytes(ws.path / f) for f in ws.changed_files(head) if not _in_paths(f, paths)
+    }
+    defects_json = json.dumps([f.model_dump(mode="json") for f in defects], indent=2)
+    prompt = (
+        f"# task.md\n\n{ctx.task_md}\n\n# Test fix pass\n\n"
+        "The implementation was judged against your tests, and the code critic reports that "
+        "these failing tests are themselves defective (the test is wrong, not the code):\n\n"
+        f"{_fence(defects_json, 'json')}\n\n# Latest gate output\n\n{format_gates(gates)}\n\n"
+        f"Fix only these defects, in files under {', '.join(paths)}. Keep every test checking "
+        "the behaviour task.md requires: don't delete or skip tests, and don't weaken "
+        "assertions just to make them pass. Don't edit implementation files; changes outside "
+        "the test paths are reverted. Re-run the tests, then reply with a short summary."
+    )
+    ctx.emit(f"code-critic reports {len(defects)} defective test(s): one fix pass by test-author")
+    result = await call_agent(ctx, Role.TEST_AUTHOR, prompt, "stage-code")
+    ctx.runlog.write_text(f"{rdir}/test-fix.txt", result.text)
+
+    reverted = []
+    for f in sorted(set(before) | {f for f in ws.changed_files(head) if not _in_paths(f, paths)}):
+        target = ws.path / f
+        if f not in before:
+            ws.restore(head, [f])
+            reverted.append(f)
+        elif _read_bytes(target) != before[f]:
+            original = before[f]
+            if original is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.write_bytes(original)
+            reverted.append(f)
+    if reverted:
+        note = "Test author edited non-test files during its fix pass; reverted: "
+        ctx.state.notes.append(note + ", ".join(reverted))
+        ctx.emit(f"test-author edited non-test files; reverted: {', '.join(reverted)}")
+
+    changed = ws.changed_files(tests_base, paths)
+    if not changed:
+        ctx.emit("test-author changed no tests")
+        return tests_base
+    commit = ws.commit_paths(f"advpipe: test fix ({rdir.replace('/', ' ')})", changed)
+    ctx.state.commits["tests"] = commit  # the coder's test guard now protects the fixed tests
+    ctx.state.notes.append("Test author fixed defective tests: " + ", ".join(changed))
+    ctx.emit(f"test fix committed: {', '.join(changed)}")
+    return commit
+
+
 # --------------------------------------------------------------------------- stages
 
 
@@ -320,6 +387,8 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
     for_arbiter: list[Dispute] = []
     minors: list[Finding] = []
     rounds = 0
+    tests_base = base  # what the coder's test-file guard protects; moves after a test fix
+    test_fix_used = False
     for rnd in range(1, cap + 1):
         rounds = rnd
         ctx.state.round = rnd
@@ -344,7 +413,7 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
                 if f.id in disputed and not _is_gate(f)
             ]
 
-        guard = test_file_guard(ctx, base) if kind == "code" else []
+        guard = test_file_guard(ctx, tests_base) if kind == "code" else []
         if guard:
             ctx.emit(f"test-file guard: coder edited tests ({guard[0].evidence})")
         gates, gate_f = await stage_gates(ctx, kind)
@@ -359,9 +428,25 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
         verdict, raw = await call_critic(ctx, critic, prompt, stage)
         ctx.emit(_verdict_line(critic, verdict))
         ctx.runlog.write_text(f"{rdir}/critic.json", raw)
+
+        # A failing test the critic says is itself wrong goes back to the test author, once per
+        # stage. The rerun gates are the ground truth: the claim alone never clears a failure.
+        defects = [f for f in verdict.findings if f.category == "test-defect"]
+        test_failed = any(g.name == "test" and not g.passed for g in gates)
+        if kind == "code" and defects and test_failed and not test_fix_used:
+            test_fix_used = True
+            tests_base = await test_fix_pass(ctx, defects, gates, tests_base, rdir)
+            gates, gate_f = await stage_gates(ctx, kind)
+            ctx.last_gates = gates
+            ctx.emit(f"gates after test fix: {gates_line(gates)}")
         ctx.runlog.write_json(f"{rdir}/gates.json", gates)
 
-        found = _prefix(guard + gate_f + verdict.findings, f"{kind[0].upper()}{rnd}-")
+        # Test-defect claims are recorded, never sent to the coder (it can't edit tests).
+        critic_findings = [
+            f.model_copy(update={"severity": "minor"}) if f.category == "test-defect" else f
+            for f in verdict.findings
+        ]
+        found = _prefix(guard + gate_f + critic_findings, f"{kind[0].upper()}{rnd}-")
         minors += [f for f in found if not f.blocking]
         blocking = [f for f in found if f.blocking]
 

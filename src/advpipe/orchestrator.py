@@ -61,6 +61,8 @@ class Orchestrator:
         progress: Callable[[str], None] | None = None,
         name: str | None = None,
     ) -> None:
+        if state is None and not work_item.strip():
+            raise ValueError("work_item must not be empty")
         self.config = config
         self.runner = runner
         self.repo = repo.resolve()

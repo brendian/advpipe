@@ -86,7 +86,13 @@ def run(
     """Drive work items through the pipeline, leaving a branch per item for human review."""
     if from_file is not None and work_item is None:
         items = _read_items(from_file)
+        if not items:
+            raise typer.BadParameter(f"no work items in {from_file}")
     elif work_item is not None and from_file is None:
+        if not work_item.strip():
+            raise typer.BadParameter(
+                'the work item is empty. If you used "$(cat FILE)", check that FILE exists.'
+            )
         items = [work_item]
     else:
         raise typer.BadParameter("give exactly one of WORK_ITEM or --from-file")

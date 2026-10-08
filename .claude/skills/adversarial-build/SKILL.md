@@ -110,6 +110,11 @@ For round = 1..3:
    add a blocking finding: "coder modified test files".
 3. Run all gates (tests, types, lint). Each failure is a blocking finding.
 4. Launch `code-critic` with `task.md`, the implementation diff, and gate output.
+   If the test gate failed and the critic reports a `test-defect` finding (the test itself is
+   wrong), give `test-author` **one** fix pass per stage for exactly those tests. Revert any
+   non-test changes it makes, commit the fixed tests (this is the new base for the test-file
+   guard), and re-run the gates before deciding the round. Never send test-defect findings to
+   the coder.
 5. If all gates are green and there are no blocking findings, the stage passes. Otherwise continue.
 
 If the cap is hit with blocking findings still open, go to the **Arbiter**, then continue.

@@ -150,3 +150,26 @@ def test_run_name_rejected_with_from_file(tmp_path: Path) -> None:
         app, ["run", "--from-file", str(items), "--repo", str(tmp_path), "--name", "x"]
     )
     assert result.exit_code != 0
+
+
+def test_run_rejects_empty_work_item(target_repo: Path) -> None:
+    for empty in ["", "   \n  "]:
+        result = cli.invoke(app, ["run", empty, "--repo", str(target_repo)])
+        assert result.exit_code != 0
+        assert "work item is empty" in result.output
+    assert not (target_repo / ".advpipe" / "runs").exists()  # nothing was started
+
+
+def test_run_rejects_items_file_without_items(tmp_path: Path) -> None:
+    items = tmp_path / "items.txt"
+    items.write_text("# only a comment\n\n")
+    result = cli.invoke(app, ["run", "--from-file", str(items), "--repo", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "no work items" in result.output
+
+
+def test_orchestrator_rejects_empty_work_item(config: Config, target_repo: Path) -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="work_item"):
+        Orchestrator(config, FakeAgentRunner({}), target_repo, "  ")

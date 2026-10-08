@@ -194,6 +194,14 @@ Details that matter:
   raise it again, the dispute is accepted. "The same finding" means the same
   `Finding.match_key()`, which is `(file, criterion)`. Line numbers are left out because they
   move when code is edited.
+- **Defective tests go back to the test author, once.** The coder can't edit tests, so a test
+  that is itself wrong (invalid SQL, a wrong expected value) would otherwise end the run. If
+  the test gate fails and the code critic reports a finding with `category: "test-defect"`,
+  `test_fix_pass` gives the **test author** one fix pass for that stage. Changes outside the
+  test paths are put back. The fixed tests are committed on their own, and that commit becomes
+  the coder's new test-guard baseline (and `state.commits["tests"]`). The gates then rerun in
+  the same round. The critic's claim never clears anything by itself: only the rerun gates
+  count. Test-defect findings are recorded as minor and never sent to the coder.
 - **Gate findings can't be disputed.** `_is_gate` recognises them by their `gate:` / `guard:`
   criterion, and dispute handling skips them.
 - **Minor findings never reopen a loop.** They go into the report as-is.

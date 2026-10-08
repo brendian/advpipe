@@ -252,3 +252,20 @@ def happy_scripts() -> dict[Role, list[Step]]:
         Role.STANDARDS_REVIEWER: [verdict_pass()],
         Role.SECURITY_REVIEWER: [verdict_pass()],
     }
+
+
+# A test with a wrong expected value: it can never pass, even with a correct clamp.
+TEST_CLAMP_DEFECT = TEST_CLAMP.replace(
+    "assert clamp(5, 0, 10) == 5", "assert clamp(5, 0, 10) == 6  # defect"
+)
+
+
+def defect_finding(fid: str = "F1") -> dict[str, Any]:
+    return finding(
+        fid,
+        category="test-defect",
+        file="tests/test_clamp.py",
+        line=7,
+        criterion="AC2",
+        claim="test_within expects 6, but AC2 says clamp(5, 0, 10) returns 5",
+    )

@@ -496,6 +496,11 @@ commands. The defaults assume Python.
 **Can I see what each agent said?** Yes. `.advpipe/runs/<run-id>/` contains every agent's
 output, each critic's verdict and each round's check results.
 
+**What if one of the generated tests is wrong?** The coder isn't allowed to change tests, so if
+a test is itself broken (say, invalid SQL in the test), the code critic reports it as a
+`test-defect`. The test author then gets one chance to fix that test, the checks run again, and
+the run continues. If the test still fails, the run ends `needs_human` and you fix it by hand.
+
 **Why do agents sometimes "dispute" findings?** An author may push back on a critic, e.g.
 "AC3 explicitly allows this". If the critic raises the same point again, the arbiter decides.
 Disputes are never argued back and forth; and failing checks can't be disputed at all.

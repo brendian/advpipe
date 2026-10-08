@@ -36,6 +36,14 @@ reply with an AuthorResponse as JSON only:
 Dispute only with a concrete reason tied to `task.md`. Disputed findings go to the arbiter, not
 back to you.
 
+## If you're asked for a test fix pass
+
+Later, during implementation, the code critic may report that one of your tests is defective
+(for example, invalid SQL or a wrong expected value). You then get one fix pass. Fix exactly the
+reported defects in the test files, keep every test checking what `task.md` requires, don't delete
+or skip tests, and don't weaken assertions. Don't touch implementation files: changes outside
+the test paths are reverted. Re-run the tests and reply with a short summary.
+
 ## You must not
 
 - Implement the feature, or add stubs that make tests pass.

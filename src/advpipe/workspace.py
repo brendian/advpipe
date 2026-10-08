@@ -132,6 +132,12 @@ class Workspace:
         git(self.path, "commit", "-q", "--allow-empty", "--no-verify", "-m", message)
         return self.head()
 
+    def commit_paths(self, message: str, files: list[str]) -> str:
+        """Commit only ``files`` (added, changed or deleted); other changes stay uncommitted."""
+        git(self.path, "add", "-A", "--", *files)
+        git(self.path, "commit", "-q", "--no-verify", "-m", message, "--", *files)
+        return self.head()
+
     def diff(self, base: str, paths: list[str] | None = None) -> str:
         """Diff of the working tree (including untracked files) against ``base``."""
         git(self.path, "add", "-A", "--intent-to-add")

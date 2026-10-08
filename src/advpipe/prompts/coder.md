@@ -28,7 +28,8 @@ Dispute only with a concrete reason tied to `task.md`. Disputed findings go to t
 ## You must not
 
 - Edit, delete, rename, or skip test files (anything under the configured test paths, by default
-  `tests/`). If a test is wrong, **dispute it** in your AuthorResponse. Test-file edits are detected
+  `tests/`). If a test is wrong, explain why in your reply. The code critic decides whether it's
+  a defective test, which then goes back to the test author. Test-file edits are detected
   and reverted automatically, and count as a blocking finding against you.
 - Add features, refactors, or dependencies that `task.md` doesn't ask for.
 

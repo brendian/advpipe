@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field, model_validator
 log = logging.getLogger(__name__)
 
 Severity = Literal["blocking", "minor"]
-Category = Literal["correctness", "coverage", "standards", "security", "scope"]
+# "test-defect": a failing test is itself wrong (not the implementation). Code stage only.
+Category = Literal["correctness", "coverage", "standards", "security", "scope", "test-defect"]
 
 
 class Finding(BaseModel):
