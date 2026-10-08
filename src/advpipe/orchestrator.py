@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -15,7 +14,7 @@ from advpipe.config import Config
 from advpipe.events import EventKind, emit
 from advpipe.gates import gate_findings, run_gates
 from advpipe.models import RESUMABLE, Finding, RunState, Stage, StageResult, Status
-from advpipe.runlog import RunLog, render_report
+from advpipe.runlog import RunLog, is_this_process, render_report
 from advpipe.runner import AgentRunner, Role
 from advpipe.stages import (
     ALL_GATES,
@@ -51,7 +50,7 @@ def check_resumable(repo: Path, run_id: str, *, locked_for_me: bool = False) -> 
     if state.status not in RESUMABLE:
         raise NotResumable(f"run {run_id} is {state.status.value}; nothing to resume")
     holder = runlog.lock_holder()
-    if holder is not None and not (locked_for_me and holder == os.getpid()):
+    if holder is not None and not (locked_for_me and is_this_process(holder)):
         raise NotResumable(f"run {run_id} is still being driven by pid {holder}")
     return state
 

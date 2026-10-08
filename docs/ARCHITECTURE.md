@@ -372,7 +372,9 @@ renames it over the target, so a reader polling a live run never sees a half-wri
 **Locking.** `RunLog.acquire_lock` writes the current process ID to `run.lock`.
 `RunLog.lock_holder` checks whether that process is still alive (`pid_alive`: `os.kill(pid, 0)`, or
 `OpenProcess` on Windows, where signal 0 means Ctrl+C), so a lock
-left behind by a crash doesn't block anything.
+left behind by a crash doesn't block anything. A lock naming this process counts as its own
+(`is_this_process`); on Windows that includes the parent, because a venv's `python.exe` is a
+launcher that runs the real interpreter as a child, so `start_detached` records the launcher's pid.
 
 **Run ids are path components.** `RunLog.for_run` passes every id through `check_run_id`
 (letters, digits, `.`, `_`, `-`; no leading `.` or `-`; no `..`), and every CLI command that

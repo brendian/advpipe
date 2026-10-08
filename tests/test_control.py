@@ -17,11 +17,12 @@ from fakes import IMPL_OK, FakeAgentRunner, happy_scripts, verdict_pass, writes
 from typer.testing import CliRunner
 
 import advpipe.control as control
+import advpipe.runlog as runlog_mod
 from advpipe.cli import app
 from advpipe.config import Config
 from advpipe.models import RunState, Status
 from advpipe.orchestrator import Orchestrator
-from advpipe.runlog import RunLog, pid_alive
+from advpipe.runlog import RunLocked, RunLog, pid_alive
 from advpipe.runner import Role
 
 cli = CliRunner()
@@ -41,6 +42,23 @@ def test_pid_alive() -> None:
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
     assert not pid_alive(proc.pid)  # reaped, so the pid is free
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_detached_child_takes_lock_from_windows_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    # On Windows, start_detached records the venv launcher's pid; the interpreter is its child.
+    monkeypatch.setattr(runlog_mod.sys, "platform", platform)
+    monkeypatch.setattr(runlog_mod, "pid_alive", lambda pid: True)
+    runlog = RunLog(tmp_path / "run")
+    runlog.acquire_lock(os.getppid())
+    if platform == "win32":
+        runlog.acquire_lock()
+        assert runlog.lock_holder() == os.getpid()
+    else:
+        with pytest.raises(RunLocked):
+            runlog.acquire_lock()
 
 
 def events_text(runlog: RunLog) -> str:

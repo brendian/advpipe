@@ -57,6 +57,15 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def is_this_process(pid: int) -> bool:
+    """Whether ``pid`` names this process, as written to run.lock by `start_detached`.
+
+    On Windows a venv's python.exe (and a console-script .exe) is a launcher that runs the real
+    interpreter as its child, so the pid `start_detached` saw is our parent's.
+    """
+    return pid == os.getpid() or (sys.platform == "win32" and pid == os.getppid())
+
+
 def check_run_id(run_id: str) -> str:
     """Return ``run_id`` if it's safe to use as a directory name; raise ValueError otherwise."""
     if not RUN_ID_RE.fullmatch(run_id) or ".." in run_id:
@@ -97,10 +106,10 @@ class RunLog:
 
     def acquire_lock(self, pid: int | None = None) -> None:
         """Mark the run as driven by ``pid`` (default: this process)."""
-        pid = pid or os.getpid()
         holder = self.lock_holder()
-        if holder is not None and holder != pid:
+        if holder is not None and not (holder == pid if pid else is_this_process(holder)):
             raise RunLocked(f"run is being driven by pid {holder}")
+        pid = pid or os.getpid()
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock.write_text(str(pid))
 

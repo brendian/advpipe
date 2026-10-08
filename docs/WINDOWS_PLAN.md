@@ -9,6 +9,8 @@ run before it wrote `run.json`). Two gaps are left.
 `cancel_run` sends `SIGINT`. On Windows `os.kill(pid, SIGINT)` is `TerminateProcess`: no
 "Interrupted during <stage>" note, `run.lock` left behind (harmless, the pid is dead), and the
 Claude CLI subprocess the SDK started may be orphaned.
+Until the child takes the lock, `run.lock` holds the venv launcher's pid (see `is_this_process`),
+so an early cancel ends only the launcher and may leave the interpreter running.
 
 Fix:
 - Ask the run to stop through a file instead of a signal: `cancel_run` writes
