@@ -19,7 +19,7 @@
       <tr id="run-{{ row.run_id }}" class="status-{{ row.status }}">
         <td><span class="chip chip-{{ row.status }}" title="{{ row.info.help }}">{{ row.info.icon }} {{ row.info.label }}</span></td>
         <td>
-          <div class="title">{{ row.title }}</div>
+          <div class="title"><a href="/runs/{{ row.run_id }}">{{ row.title }}</a></div>
           <div class="sub"><code>{{ row.branch or "(no branch yet)" }}</code> · <span class="muted">{{ row.run_id }}</span></div>
         </td>
         <td class="stage">{{ row.stage }}</td>

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from advpipe.ui.routes import runs
+from advpipe.ui.routes import run_detail, runs
 from advpipe.ui.security import LOOPBACK_HOSTS, GuardMiddleware
 from advpipe.ui.state import UiConfig
 
@@ -53,6 +53,7 @@ def create_ui_app(
     )
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     app.include_router(runs.router)
+    app.include_router(run_detail.router)
     app.add_middleware(
         GuardMiddleware, token=token, csrf_token=csrf_token, allowed_hosts=allowed_hosts
     )

@@ -387,6 +387,21 @@ up and move along by themselves. Hover over a status to see what it means. Filte
 runs, running ones, ones that need you (`needs you`, `stopped`, `over budget`, `error`), or
 complete ones.
 
+Click a run to open its page:
+
+- **Header:** status (hover for what it means), stage, cost against the budget, time, and the
+  branch with a copy button. If the run needs you, *What's left open* lists the findings.
+- **Next steps:** the commands to run next, each with a copy button. For a complete run:
+  read the change, list the files, merge, delete the branch. Otherwise: resume, cancel or
+  clean up. The UI never runs them; you do.
+- **Log:** the run's progress lines. While the run is going, new lines appear as they happen,
+  and the header and timeline update by themselves.
+- **Timeline:** SPEC → TESTS → CODE → REVIEW → ARBITER → FINAL CHECKS, each marked done, in
+  progress, stopped here, not yet, or not needed. Open a step to see its rounds: what the
+  author replied, the check results (with output), the exact diff the critic judged, and the
+  critic's verdict with its findings. SPEC also shows `task.md`; ARBITER shows its rulings.
+- **Report:** `report.md`, once the run has finished.
+
 - It only reads the run files. Closing it doesn't affect any run.
 - It's for this machine only: it listens on `127.0.0.1`, and every request needs the token from
   the link (it's kept in a cookie after the first visit). A new token is made each time you

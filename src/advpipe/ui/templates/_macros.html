@@ -1,0 +1,118 @@
+{#- Building blocks of the run detail page. Everything from the run directory is autoescaped;
+    `| safe` only ever follows ui/render.py's markdown(), which escapes raw HTML itself. -#}
+
+{% macro copy_button(target) -%}
+<button type="button" class="copy" data-copy="{{ target }}" aria-label="Copy to clipboard">Copy</button>
+{%- endmacro %}
+
+{% macro finding_card(f) -%}
+<article class="finding sev-{{ f.severity }}">
+  <header>
+    <strong>{{ f.id }}</strong>
+    <span class="tag tag-{{ f.severity }}">{{ f.severity }}</span>
+    <span class="tag">{{ f.category }}</span>
+    {%- if f.file %} <code>{{ f.file }}{% if f.line is not none %}:{{ f.line }}{% endif %}</code>{% endif %}
+    {%- if f.criterion %} <span class="tag">{{ f.criterion }}</span>{% endif %}
+  </header>
+  <p>{{ f.claim }}</p>
+  {%- if f.evidence %}
+  <pre class="evidence">{{ f.evidence }}</pre>
+  {%- endif %}
+  {%- if f.suggested_check %}
+  <p class="muted">How to check: {{ f.suggested_check }}</p>
+  {%- endif %}
+</article>
+{%- endmacro %}
+
+{% macro gates_block(label, g, panel_id) -%}
+<div class="gates">
+  <h4>{{ label }} <span class="muted">· {{ g.line }}</span></h4>
+  {%- if not g.readable %}
+  <p class="warning">Couldn't read <code>{{ g.path }}</code>.</p>
+  {%- endif %}
+  {%- for r in g.results %}
+  <details class="gate" id="{{ panel_id }}-{{ loop.index }}">
+    <summary>
+      {%- if r.skipped %}<span class="tag">skipped</span>
+      {%- elif r.passed %}<span class="tag tag-pass">pass</span>
+      {%- else %}<span class="tag tag-fail">fail{% if r.returncode is not none %} (exit {{ r.returncode }}){% endif %}</span>
+      {%- endif %} {{ r.name }}
+      {%- if r.command %} <code class="muted">{{ r.command | join(" ") }}</code>{% endif %}
+    </summary>
+    {%- if r.skipped %}
+    <p class="muted">Skipped: {{ r.skip_reason }}</p>
+    {%- elif r.output %}
+    <pre class="output">{{ r.output }}</pre>
+    {%- else %}
+    <p class="muted">No output.</p>
+    {%- endif %}
+  </details>
+  {%- endfor %}
+</div>
+{%- endmacro %}
+
+{% macro diff_block(diff, panel_id, label) -%}
+<details class="diff-panel" id="{{ panel_id }}">
+  <summary>{{ label }} <span class="muted">({{ diff.stat }})</span></summary>
+  {%- if diff.lines %}
+  <pre class="diff">{% for line in diff.lines %}<span class="d-{{ line.kind }}">{{ line.text }}</span>
+{% endfor %}</pre>
+  {%- else %}
+  <p class="muted">Empty diff: nothing had changed.</p>
+  {%- endif %}
+  {%- if diff.truncated %}
+  <p class="warning">Showing the first {{ diff.lines | length }} of {{ diff.total }} lines. The full diff is in <code>.advpipe/runs/{{ d.run_id }}/{{ diff.path }}</code>.</p>
+  {%- endif %}
+</details>
+{%- endmacro %}
+
+{% macro critic_block(c) -%}
+<div class="critic">
+  {%- if c.verdict is none %}
+  <h4>{{ c.role | capitalize }} <span class="tag tag-fail">unreadable</span></h4>
+  <p class="warning">Its reply couldn't be parsed as a verdict, so the pipeline treated it as a blocking finding. The raw reply:</p>
+  <pre class="output">{{ c.raw }}</pre>
+  {%- else %}
+  <h4>{{ c.role | capitalize }} <span class="tag {{ 'tag-pass' if c.verdict.verdict == 'PASS' else 'tag-fail' }}">{{ c.verdict.verdict }}</span>
+    <span class="muted">· {{ c.verdict.blocking | length }} blocking, {{ c.verdict.minor | length }} minor</span></h4>
+  {%- for f in c.verdict.findings %}
+  {{ finding_card(f) }}
+  {%- endfor %}
+  {%- if c.dropped %}
+  <p class="muted">{{ c.dropped }} more finding(s) were dropped as noise: they cited no file and line or acceptance criterion.</p>
+  {%- endif %}
+  {%- endif %}
+</div>
+{%- endmacro %}
+
+{% macro round_panel(r, panel_id, open) -%}
+<details class="round" id="{{ panel_id }}"{% if open %} open{% endif %}>
+  <summary><strong>{{ r.title }}</strong>{% if r.outcome %} <span class="muted">· {{ r.outcome }}</span>{% endif %}</summary>
+  <div class="round-body">
+    {%- if r.author is not none %}
+    <details class="reply" id="{{ panel_id }}-reply">
+      <summary>What the {{ r.author_role }} replied</summary>
+      <div class="prose">{{ r.author | safe }}</div>
+    </details>
+    {%- endif %}
+    {%- if r.test_fix is not none %}
+    <details class="reply" id="{{ panel_id }}-testfix">
+      <summary>Test fix pass: what the test author replied</summary>
+      <div class="prose">{{ r.test_fix | safe }}</div>
+    </details>
+    {%- endif %}
+    {%- for label, g in r.gates %}
+    {{ gates_block(label, g, panel_id ~ "-gates" ~ loop.index) }}
+    {%- if r.expect_red %}
+    <p class="muted">At this stage the new tests are meant to fail: nothing is implemented yet.</p>
+    {%- endif %}
+    {%- endfor %}
+    {%- if r.diff is not none %}
+    {{ diff_block(r.diff, panel_id ~ "-diff", "The diff " ~ ("the reviewers" if r.critics | length > 1 else "the critic") ~ " judged") }}
+    {%- endif %}
+    {%- for c in r.critics %}
+    {{ critic_block(c) }}
+    {%- endfor %}
+  </div>
+</details>
+{%- endmacro %}

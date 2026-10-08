@@ -89,7 +89,7 @@ All code is in `src/advpipe/`.
 | `control.py` | Acting on runs from outside: detached start, cancel, clean | `start_detached`, `cancel_run`, `clean_run`, `ControlError` |
 | `workitem.py` | Work-item files with optional front matter | `parse_work_item`, `load_work_item`, `WorkItem` |
 | `config.py` | `pipeline.toml` loading and validation | `Config`, `load_config` |
-| `ui/` | Optional local web UI (the `ui` extra); see [The web UI](#the-web-ui) | `create_ui_app`, `GuardMiddleware`, `load_runs` |
+| `ui/` | Optional local web UI (the `ui` extra); see [The web UI](#the-web-ui) | `create_ui_app`, `GuardMiddleware`, `load_runs`, `load_detail`, `stream_events` |
 | `prompts/*.md` | One system prompt per role. **Source of truth** for agent behaviour. | |
 
 ## A run, step by step
@@ -476,7 +476,7 @@ table in `report.md` (`_cost_table` in `runlog.py`).
 ## The web UI
 
 `advpipe ui` serves a local web UI (plan and milestones: [UI_PLAN.md](UI_PLAN.md); built so far:
-the skeleton and runs list). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
+the skeleton, the runs list, and the run detail page with its live log). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
 uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
 
 - **Read-only over the files.** The UI reads `.advpipe/runs/*/run.json` and `config.json`; it
@@ -486,7 +486,36 @@ uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
 - **Pages** are Jinja2 templates (`ui/templates/`, autoescaped, since run data includes agent
   output) plus htmx and its SSE extension, vendored in `ui/static/` (`VENDORED.txt` records
   versions, hashes and licenses). The runs list is a fragment (`/runs/list`) that re-fetches
-  itself every 3 seconds with `hx-trigger="every 3s"`.
+  itself every 3 seconds with `hx-trigger="every 3s"`. Each row links to its run detail page.
+- **Run detail** (`/runs/<id>`, `ui/detail.py` + `routes/run_detail.py`). `load_detail` reads
+  `run.json`, `config.json`, `report.md` and the per-stage files, and builds:
+  - the **timeline**: SPEC, TESTS, CODE, REVIEW, ARBITER, FINAL CHECKS, each with a state.
+    A mainline stage is *done* once its commit is in `RunState.commits`. The stage the run is
+    in is *in progress* (live) or *stopped here*. During ARBITER, that's both the arbiter and
+    the stage it was called from (the first one without a commit). Later stages are *not yet*
+    (resumable runs) or *not reached*. The arbiter is *not needed* if it never ran.
+  - the **round panels**: for each `stage-*/round-N/` (in numeric order), the author's reply
+    (`author.txt`), the checks (`gates.json`), the diff the critic judged (`diff.patch`, cut at
+    `MAX_DIFF_LINES`), the critic's verdict as finding cards (`critic.json`, parsed with
+    `stages.parse_model`, shown raw if that fails), and any test-fix reply. The same for
+    `review/` (both reviewers, scanner), the arbiter's rulings and `final-pass-*/`, and
+    `final-gates.json`. A missing or unreadable file shows as such; it never fails the page.
+  - **next steps**: commands to paste (`git log`/`merge`/`branch -d` for complete runs;
+    `advpipe clean`, `resume` or `cancel` otherwise), with every value `shlex.quote`d. The page
+    shows them with copy buttons (`static/app.js`); it never runs them.
+  - the **report**: `report.md` rendered by `ui/render.py`: markdown-it with raw HTML escaped,
+    unsafe link schemes dropped, and table alignment turned into classes (the CSP blocks
+    inline styles).
+- **Live updates** (`ui/live.py`). `/runs/<id>/events` is a Server-Sent Events stream of
+  `events.jsonl` from a byte `offset` (the page passes the size it rendered, so nothing is
+  shown twice). It polls the file, sends only complete lines, and sends three event types:
+  `log` (an escaped `<li>`; its SSE `id` is the byte offset after the line, so a reconnecting
+  browser's `Last-Event-ID` resumes exactly), `refresh` (after each batch), and `end` once no
+  live process holds `run.lock` (after one more read, so no last line is missed). The page
+  (htmx SSE extension) appends `log` lines, re-fetches `/runs/<id>/body` on `refresh` (the
+  header in place, the timeline and report out of band; `delay:300ms`, not `throttle`, which
+  would drop the final refresh), and closes on `end`. `app.js` keeps each `<details>` panel
+  open or closed across refreshes. Finished runs get a static page with no stream.
 - **`create_ui_app(repo, items_dir, token)`** builds the FastAPI app: routes from
   `ui/routes/`, static files, and `GuardMiddleware` (`ui/security.py`), a pure ASGI middleware
   (so it won't buffer the streaming responses later milestones add) that, for every request:
@@ -545,6 +574,11 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   missing CSRF → 403, unknown Host → 400, escaped agent text, filters, the polling fragment,
   and the `advpipe ui` command with `uvicorn.run` replaced. Skipped if the `ui` extra isn't
   installed.
+- `test_ui_detail.py`: the run detail page for runs from the real orchestrator (complete,
+  blocked at the spec, stopped in the arbiter's final pass) and for every status; escaping of
+  agent text in every file the page reads; quoting in next-step commands; 404s for unknown and
+  traversal ids; and the event stream: appended and half-written lines arrive in order,
+  keepalives, `end` when the lock is released, `Last-Event-ID`, and offsets mid-line.
 
 ## Extending it
 
