@@ -211,7 +211,7 @@ Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .
   and checks, standards doc, and role prompts, each with "who sees this".
 - Tests: each block is present, and a missing file shows a clear empty state.
 
-**U4: work items: list and editor.**
+**U4: work items: list and editor.** *(done)*
 - List grouped by folder with last-run status (via `RunState.work_item_file`) and git status.
 - Create, edit (front-matter fields plus body, with preview), rename and delete with
   confirmation, and the inline checks.

@@ -11,7 +11,14 @@ from typer.testing import CliRunner
 import advpipe.cli as cli_module
 from advpipe.cli import app
 from advpipe.runlog import list_runs
-from advpipe.workitem import WorkItem, WorkItemError, load_work_item, parse_work_item
+from advpipe.workitem import (
+    WorkItem,
+    WorkItemError,
+    format_work_item,
+    load_work_item,
+    parse_work_item,
+    salvage_work_item,
+)
 
 cli = CliRunner()
 
@@ -147,3 +154,55 @@ def test_run_item_is_exclusive_with_other_sources(target_repo: Path) -> None:
         result = cli.invoke(app, ["run", "--item", str(item), *extra, "--repo", str(target_repo)])
         assert result.exit_code != 0
         assert "exactly one of" in result.output
+
+
+# --------------------------------------------------------------------------- writing it back
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        WorkItem(body="Add clamp."),
+        WorkItem(body="Add clamp.\n\n- [ ] works", name="s03 stock"),
+        WorkItem(body="x", config="pipeline.server.toml"),
+        WorkItem(body="# Title\n---\nrule above", name="n", config="a: b.toml"),
+        WorkItem(body="---\nstarts with a rule"),  # would read as front matter on its own
+    ],
+)
+def test_format_reads_back_the_same(item: WorkItem) -> None:
+    text = format_work_item(item)
+    assert parse_work_item(text) == item
+    assert text.endswith("\n") and not text.endswith("\n\n")
+    assert format_work_item(parse_work_item(text)) == text
+
+
+def test_format_layout() -> None:
+    item = WorkItem(body="\nBody.\n\n", name="s03", config="p.toml")
+    assert format_work_item(item) == "---\nname: s03\nconfig: p.toml\n---\nBody.\n"
+    assert format_work_item(WorkItem(body="Body.")) == "Body.\n"
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        WorkItem(body="  \n "),
+        WorkItem(body="x", name="two\nlines"),
+        WorkItem(body="x", config="a\rb"),
+        WorkItem(body="x", name=" "),
+        WorkItem(body="x", name=" padded"),
+    ],
+)
+def test_format_refuses_what_would_not_read_back(item: WorkItem) -> None:
+    with pytest.raises(WorkItemError):
+        format_work_item(item)
+
+
+def test_salvage_keeps_what_it_can_read() -> None:
+    text = "---\nname: s03\ncolour: red\nname: again\nnonsense\nconfig:\n---\nBody.\n"
+    with pytest.raises(WorkItemError):
+        parse_work_item(text)
+    assert salvage_work_item(text) == ({"name": "s03"}, "Body.")
+    # Never closed: everything stays in the body, so no text is lost.
+    assert salvage_work_item("---\nname: x\nBody") == ({}, "---\nname: x\nBody")
+    assert salvage_work_item("plain\n") == ({}, "plain")
+    assert salvage_work_item("---\n---\n") == ({}, "")

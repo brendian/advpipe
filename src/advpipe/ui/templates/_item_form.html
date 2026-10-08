@@ -1,0 +1,47 @@
+{#- The editor form. Swapped out whole when a save comes back with problems (status 422). #}
+<form id="item-form" class="item-form" method="post" action="{{ '/items/new' if new else '/items/save' }}"
+      hx-post="{{ '/items/new' if new else '/items/save' }}" hx-target="this" hx-swap="outerHTML">
+  {%- if errors %}
+  <div class="form-errors" role="alert">
+    {%- for e in errors %}<p>{{ e }}</p>{% endfor %}
+  </div>
+  {%- endif %}
+  {%- if new %}
+  <label class="field"><span>File name</span>
+    <input name="path" value="{{ draft.rel }}" required maxlength="300" list="item-folders"
+           placeholder="server/s03-stock.md" autocomplete="off" spellcheck="false">
+    <small>Inside <code>{{ items_dir }}/</code>. Folders are made as needed, and <code>.md</code> is added if you leave it off.</small>
+  </label>
+  <datalist id="item-folders">{% for f in folders %}<option value="{{ f }}/"></option>{% endfor %}</datalist>
+  {%- else %}
+  <input type="hidden" name="path" value="{{ draft.rel }}">
+  <input type="hidden" name="base" value="{{ draft.base }}">
+  {%- endif %}
+  <div class="field-row">
+    <label class="field"><span>Branch name <span class="muted">(optional)</span></span>
+      <input name="name" value="{{ draft.name }}" maxlength="300" autocomplete="off" placeholder="s03-stock">
+      <small>Runs make the branch <code>advpipe/&lt;name&gt;</code>. Empty: made from the first line.</small>
+    </label>
+    <label class="field"><span>Pipeline config <span class="muted">(optional)</span></span>
+      <input name="config" value="{{ draft.config }}" maxlength="300" list="config-files" autocomplete="off" placeholder="pipeline.toml">
+      <small>A <code>.toml</code> file, relative to the repo root. Empty: <code>pipeline.toml</code> or the defaults.</small>
+    </label>
+    <datalist id="config-files">{% for f in config_files %}<option value="{{ f }}"></option>{% endfor %}</datalist>
+  </div>
+  <div class="editor">
+    <label class="field"><span>Work item <span class="muted">(markdown)</span></span>
+      <textarea name="body" rows="22" required spellcheck="true"
+                placeholder="What to build or fix, and how you'll know it's done.">{{ draft.body }}</textarea>
+    </label>
+    <div class="preview-pane">
+      <div class="field-label">Preview and checks</div>
+      <div id="item-preview" hx-post="/items/preview" hx-trigger="input delay:400ms from:#item-form"
+           hx-include="#item-form" aria-live="polite">{% include "_item_preview.html" %}</div>
+    </div>
+  </div>
+  <div class="form-actions">
+    <button type="submit" class="button primary">{{ "Create" if new else "Save" }}</button>
+    <a href="/items">Cancel</a>
+    <span class="muted small">Saving writes the file only. Nothing is committed.</span>
+  </div>
+</form>

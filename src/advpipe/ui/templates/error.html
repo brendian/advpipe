@@ -3,5 +3,9 @@
 {% block content %}
 <h1>{{ title }}</h1>
 <p>{{ message }}</p>
+{%- if back is defined %}
+<p><a href="{{ back[0] }}">← {{ back[1] }}</a></p>
+{%- else %}
 <p><a href="/">← All runs</a></p>
+{%- endif %}
 {% endblock %}

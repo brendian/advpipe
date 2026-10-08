@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}{% if new %}New work item{% else %}{{ draft.rel }}{% endif %}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/items">← All work items</a></p>
+<div class="page-head">
+  <h1>{% if new %}New work item{% else %}<code>{{ draft.rel }}</code>{% endif %}</h1>
+  {%- if not new %}
+  <span class="head-actions">
+    <a href="/items/rename?{{ q }}">Rename</a>
+    <a href="/items/delete?{{ q }}" class="danger-link">Delete</a>
+  </span>
+  {%- endif %}
+</div>
+{%- if notice %}
+<p class="notice" role="status">{{ notice }}</p>
+{%- endif %}
+{%- if last_run %}
+{%- set info = statuses[last_run.status] %}
+<p>Last run: <a href="/runs/{{ last_run.run_id }}" class="chip chip-{{ last_run.status }}" title="{{ info.help }}">{{ info.icon }} {{ info.label }}</a>
+  <span class="muted">{{ last_run.age }} · {{ last_run.run_id }}</span></p>
+{%- elif not new %}
+<p class="muted">Not run yet.</p>
+{%- endif %}
+{%- if draft.problem %}
+<p class="callout warning">As it is on disk, this file can't be run: {{ draft.problem }}.
+  Below is what could be read from it. Saving writes it back in the right form, without any
+  front-matter lines that couldn't be read.</p>
+{%- endif %}
+
+{% include "_item_form.html" %}
+
+{%- if command %}
+<section class="next-steps">
+  <h2>Run it</h2>
+  <p class="muted">Starting runs from this page comes in a later version. For now, from a terminal:</p>
+  <div class="cmd"><code id="run-cmd">{{ command }}</code> {{ m.copy_button("run-cmd") }}</div>
+</section>
+{%- endif %}
+{% endblock %}
