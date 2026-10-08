@@ -26,6 +26,7 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev,ui]'   # or: uv sync --a
   behaviour or CLI changes.
 - `examples/claude-hooks.json`: optional PostToolUse hook running `advpipe gates`.
 - `docs/UI_PLAN.md`: plan for the optional local web UI, in milestones (U0–U6), one per session.
+- `scripts/ui_screenshots.py`: remakes `docs/screenshots/` (README) from a fake-agent demo repo.
 
 ## Design rules (do not drop these)
 

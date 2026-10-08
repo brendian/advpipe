@@ -226,7 +226,7 @@ Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .
 - Tests: subprocess calls are monkeypatched, and the exact argument lists are checked (no
   shell); CSRF is required; invalid actions are rejected.
 
-**U6: polish and docs.**
+**U6: polish and docs.** *(done)*
 - Empty states and help text.
 - A *Help* page explaining the pipeline in plain words.
 - Dark mode, keyboard focus styles, and a responsive layout down to tablet width.

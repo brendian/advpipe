@@ -310,7 +310,7 @@ def test_run_without_any_round_files(target_repo: Path) -> None:
     fake_run(target_repo, "r-new", status=Status.ERROR, stage=Stage.INIT, work_item="x")
     page = logged_in(target_repo).get("/runs/r-new").text
     assert "(not created yet)" in page  # no branch
-    assert "No events recorded" in page
+    assert "No progress was recorded for this run" in page
     assert "This run has no <code>report.md</code>" in page
     assert set(steps_of(page).values()) == {"not yet", "only if needed"}
 
