@@ -1,0 +1,48 @@
+{#- The New run form. Swapped out whole when starting comes back with problems (status 422). #}
+<form id="run-form" class="item-form" method="post" action="/runs/start"
+      hx-post="/runs/start" hx-target="this" hx-swap="outerHTML">
+  {%- if errors %}
+  <div class="form-errors" role="alert">
+    {%- for e in errors %}<p class="output">{{ e }}</p>{% endfor %}
+  </div>
+  {%- endif %}
+  <fieldset class="source">
+    <legend>What to build</legend>
+    <label class="choice"><input type="radio" name="source" value="item"{% if form.source == "item" %} checked{% endif %}{% if not choices %} disabled{% endif %}>
+      A work item</label>
+    {%- if choices %}
+    <label class="field"><span class="visually-hidden">Work item</span>
+      <select name="item">
+        <option value="">Choose a work item…</option>
+        {%- for rel in choices %}
+        <option value="{{ rel }}"{% if rel == form.item %} selected{% endif %}>{{ rel }}</option>
+        {%- endfor %}
+      </select>
+    </label>
+    {%- else %}
+    <p class="muted small">There are no work items yet. <a href="/items/new">Write one</a>, or type a one-off task below.</p>
+    {%- endif %}
+    <label class="choice"><input type="radio" name="source" value="task"{% if form.source == "task" %} checked{% endif %}>
+      A one-off task, typed here</label>
+    <label class="field"><span class="visually-hidden">One-off task</span>
+      <textarea name="task" rows="6" spellcheck="true" class="short"
+                placeholder="What to build or fix, and how you'll know it's done.">{{ form.task }}</textarea>
+      <small>Used only when “A one-off task” is chosen. It isn't saved as a work item.</small>
+    </label>
+  </fieldset>
+  <div class="field-row">
+    <label class="field"><span>Branch name <span class="muted">(optional)</span></span>
+      <input name="name" value="{{ form.name }}" maxlength="300" autocomplete="off" spellcheck="false"
+             placeholder="{{ plan.item_name or 'from the first line' }}">
+      <small>The run makes the branch <code>advpipe/&lt;name&gt;</code>. Empty: the work item's own, or its first line.</small>
+    </label>
+    <label class="field"><span>Pipeline config <span class="muted">(optional)</span></span>
+      <input name="config" value="{{ form.config }}" maxlength="300" list="run-config-files" autocomplete="off" spellcheck="false"
+             placeholder="{{ plan.item_config or 'pipeline.toml' }}">
+      <small>A <code>.toml</code> file in the repo. Empty: the work item's own, or <code>pipeline.toml</code>, or the defaults.</small>
+    </label>
+    <datalist id="run-config-files">{% for f in config_files %}<option value="{{ f }}"></option>{% endfor %}</datalist>
+  </div>
+  <div id="run-summary" hx-post="/runs/new/check" hx-trigger="input delay:400ms from:#run-form"
+       hx-include="#run-form" aria-live="polite">{% include "_run_new_summary.html" %}</div>
+</form>

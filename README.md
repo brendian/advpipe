@@ -336,13 +336,15 @@ Prints the run's `report.md`.
 ### `advpipe resume`
 
 ```sh
-advpipe resume <run-id> [--repo PATH] [--budget USD] [--config FILE] [--quiet]
+advpipe resume <run-id> [--repo PATH] [--budget USD] [--config FILE] [--quiet] [--detach]
 ```
 
 Continue a run that was interrupted (Ctrl-C, crash, closed laptop), stopped by an error, or ran
 out of budget. It picks up at the first stage that didn't finish; finished stages aren't redone
-or paid for again. Use `--budget` to raise the limit after `budget_exceeded`. Completed runs and
-`needs_human` runs can't be resumed. Start a new run instead.
+or paid for again. Use `--budget` to raise the limit after `budget_exceeded`; the run keeps the
+new limit (it's saved in the run's `config.json`). Completed runs and `needs_human` runs can't
+be resumed. Start a new run instead. `--detach` resumes in the background, as with
+`advpipe run --detach`: it checks the run can be resumed, prints the run id and returns.
 
 ### `advpipe cancel`
 
@@ -379,7 +381,7 @@ pip install -e '.[ui]'     # once: the web UI's extra packages
 advpipe ui [--repo PATH] [--port 8765] [--items-dir work-items]
 ```
 
-Serves a small web page for watching runs in your browser. It prints a link like
+Serves a small web page for watching, starting and managing runs in your browser. It prints a link like
 `http://127.0.0.1:8765/?token=...`: open that. The page lists every run in the repo, newest
 first, with its status, stage and round, cost (against the budget while it's running) and age.
 It refreshes itself every few seconds, so runs started from a terminal (or with `--detach`) show
@@ -391,9 +393,12 @@ Click a run to open its page:
 
 - **Header:** status (hover for what it means), stage, cost against the budget, time, and the
   branch with a copy button. If the run needs you, *What's left open* lists the findings.
+- **Actions:** buttons for what can be done with the run as it is now (see *Starting and
+  managing runs* below): *Cancel run* while it's running; *Resume* for a stopped, failed or
+  over-budget run; *Clean up…* for any run that isn't running or complete.
 - **Next steps:** the commands to run next, each with a copy button. For a complete run:
   read the change, list the files, merge, delete the branch. Otherwise: resume, cancel or
-  clean up. The UI never runs them; you do.
+  clean up. The UI never merges: those commands are for you to run.
 - **Log:** the run's progress lines. While the run is going, new lines appear as they happen,
   and the header and timeline update by themselves.
 - **Timeline:** SPEC → TESTS → CODE → REVIEW → ARBITER → FINAL CHECKS, each marked done, in
@@ -417,11 +422,12 @@ check output, never an author's reasoning):
 
 A file the run hasn't written (yet) says so, and what that means.
 
-- It only reads the run files. Closing it doesn't affect any run.
+- It reads the run files, and acts only through the advpipe commands (see below). Closing it
+  doesn't affect any run, including runs started from it.
 - It's for this machine only: it listens on `127.0.0.1`, and every request needs the token from
   the link (it's kept in a cookie after the first visit). A new token is made each time you
   start it. `--host` with anything else is refused unless you also pass
-  `--i-know-this-is-exposed`. Don't: the UI will be able to start runs, which spend money and run
+  `--i-know-this-is-exposed`. Don't: the UI can start runs, which spend money and run
   commands.
 - One repo per `advpipe ui`. To watch several repos, start one per repo on different ports.
 - `--items-dir` is where your work-item files live, relative to the repo (default
@@ -444,9 +450,33 @@ it: *not in git*, *uncommitted* (changed since the last commit), *ignored*, or c
   git still has a copy. Runs keep their own copy of the work item, so neither affects them.
 - Only `.md` files inside the folder can be opened or changed: paths with `..`, absolute paths,
   hidden files, and symlinks that lead out of the folder are refused.
-- Starting a run from the UI comes in a later version; the editor shows the
-  `advpipe run --item` command to copy meanwhile.
+- **Run** (in the list and the editor) and **Save & run** (in the editor) open the New run
+  dialog for that item. They never start anything by themselves.
 
+**Starting and managing runs.** Every action runs the same advpipe command you'd type, in the
+background, so the run carries on if you close the page or stop the UI.
+
+- **New run** (on the runs page, or *Run* on a work item) opens a dialog: pick a work item, or
+  type a one-off task (it isn't saved), and optionally a **branch name** and **config** that
+  override the item's front matter. Before you start, it shows the branch the run will make,
+  which config it uses, problems (a missing or invalid config, an item that doesn't parse) and
+  **"This can spend up to $X"**: the config's `budget_usd_per_task`. *Start* runs
+  `advpipe run --item FILE --detach` (or `advpipe run --detach -- "TASK"`) and opens the run's
+  page. If the config changed after the dialog showed its budget, it refuses and shows the new
+  one, so a run never starts on a budget you didn't see. A run that fails before it gets going
+  (say, its config can't be read) shows its output there instead.
+- **Cancel run** asks first, then runs `advpipe cancel`: the run stops at its next safe point
+  and can be resumed.
+- **Resume** runs `advpipe resume --detach`. Its budget field is the run's new *total* budget
+  (it has to be more than it has spent); empty keeps the current one. For a run that ran out
+  of budget, a bigger one is filled in for you.
+- **Clean up…** opens a page saying what would be removed (the working copy, the branch, and
+  how many of its commits no other branch has), with options to delete those commits anyway
+  (`--force`) and the run's log (`--logs`). It then runs `advpipe clean`. The runs list has a
+  *Clean up* link on every run it applies to.
+- A button only shows when the action makes sense for the run's status, and the UI checks
+  again when you click: if the run moved on in the meantime, it says so instead. When advpipe
+  itself refuses (say, a branch with commits only it has), its message is shown.
 ### `advpipe gates`
 
 ```sh
@@ -549,7 +579,8 @@ Read this before pointing advpipe at anything important.
   tool.
 - **Review before merging.** The pipeline makes your review faster; it doesn't replace it.
 - **The web UI is local only.** `advpipe ui` listens on `127.0.0.1` and needs the token it
-  prints. Don't expose it to a network.
+  prints. It can start runs, so anyone who can use it can spend your money and run agents on
+  your machine. Don't expose it to a network.
 
 ## Using it inside Claude Code (no Python)
 

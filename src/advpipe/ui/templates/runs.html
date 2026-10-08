@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Runs{% endblock %}
 {% block content %}
-<h1>Runs</h1>
+<div class="page-head">
+  <h1>Runs</h1>
+  <a class="button primary" href="/runs/new">New run</a>
+</div>
+{%- if removed %}
+<p class="notice" role="status">Cleaned up run <code>{{ removed }}</code> and deleted its log.</p>
+{%- endif %}
 {% include "_runs_list.html" %}
 {% endblock %}

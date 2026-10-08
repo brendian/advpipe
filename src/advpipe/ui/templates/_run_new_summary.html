@@ -1,0 +1,26 @@
+{#- What starting would do, re-fetched as the form changes. The hidden `budget` field sends
+    back the budget shown here; the server refuses to start if it's no longer the real one. #}
+<section class="run-summary">
+  <h2>Before you start</h2>
+  {%- if plan.budget is not none %}
+  <p class="spend">This can spend up to <strong>${{ plan.budget_text }}</strong>
+    <span class="muted">(the budget in {{ plan.config_label }}; the run stops if it reaches it).</span></p>
+  {%- endif %}
+  <dl class="run-meta">
+    <div><dt>Config</dt><dd>{{ plan.config_label or "—" }}</dd></div>
+    <div class="wide"><dt>Branch</dt><dd>{% if plan.branch %}<code>{{ plan.branch }}</code>{% else %}<span class="muted">(from the work item)</span>{% endif %}</dd></div>
+  </dl>
+  {%- if plan.errors or plan.warnings %}
+  <ul class="item-checks">
+    {%- for e in plan.errors %}<li class="check check-error">{{ e }}</li>{% endfor %}
+    {%- for w in plan.warnings %}<li class="check check-warning">{{ w }}</li>{% endfor %}
+  </ul>
+  {%- endif %}
+  <input type="hidden" name="budget" value="{{ plan.budget_text }}">
+  <div class="form-actions">
+    <button type="submit" class="button primary"{% if not plan.ok %} disabled{% endif %}>
+      Start{% if plan.ok and plan.budget is not none %} (up to ${{ plan.budget_text }}){% endif %}</button>
+    <a href="/">Cancel</a>
+    <span class="muted small">Agents edit a separate copy of the repo and run its checks. Nothing is merged or pushed.</span>
+  </div>
+</section>

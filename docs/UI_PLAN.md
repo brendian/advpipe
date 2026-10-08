@@ -218,7 +218,7 @@ Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .
 - Tests: a full create/edit/rename/delete round trip on disk; path traversal is rejected;
   front matter round-trips unchanged; deleting asks first.
 
-**U5: actions.**
+**U5: actions.** *(done)*
 - *Run* from an item or the New run dialog: shows the budget, then `advpipe run --item ...
   --detach`.
 - *Cancel* (`advpipe cancel`), *Resume* (`advpipe resume`), *Clean up* (`advpipe clean`).

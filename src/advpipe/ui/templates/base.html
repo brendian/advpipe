@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   {#- No inline styles or eval from htmx, so the Content-Security-Policy can stay strict.
-      Swap 422 too: that's a form coming back with its problems marked. #}
+      Swap 422 too: that's a form coming back with its problems marked. And 409: an action
+      that isn't valid for the run any more (it moved on since the page was drawn). #}
   <meta name="htmx-config"
-        content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false, "selfRequestsOnly": true, "historyCacheSize": 0, "responseHandling": [{"code": "204", "swap": false}, {"code": "[23]..", "swap": true}, {"code": "422", "swap": true}, {"code": "[45]..", "swap": false, "error": true}]}'>
+        content='{"includeIndicatorStyles": false, "allowEval": false, "allowScriptTags": false, "selfRequestsOnly": true, "historyCacheSize": 0, "responseHandling": [{"code": "204", "swap": false}, {"code": "[23]..", "swap": true}, {"code": "422", "swap": true}, {"code": "409", "swap": true}, {"code": "[45]..", "swap": false, "error": true}]}'>
   <title>{% block title %}advpipe{% endblock %} · {{ repo_name }}</title>
   <link rel="icon" href="data:,">{# no favicon request #}
   <link rel="stylesheet" href="/static/app.css">

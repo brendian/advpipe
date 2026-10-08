@@ -16,7 +16,13 @@ from advpipe.config import load_config
 from advpipe.control import CONSOLE_LOG, ControlError, cancel_run, clean_run, start_detached
 from advpipe.gates import run_gates
 from advpipe.models import RunState, Status
-from advpipe.orchestrator import NotResumable, Orchestrator, new_run_id, run_many
+from advpipe.orchestrator import (
+    NotResumable,
+    Orchestrator,
+    check_resumable,
+    new_run_id,
+    run_many,
+)
 from advpipe.runlog import RunLog, check_run_id, list_runs
 from advpipe.runner import SdkAgentRunner
 from advpipe.workitem import WorkItemError, load_work_item
@@ -109,11 +115,16 @@ def _detach(
     else:
         assert work_item is not None
         args += ["--", work_item]  # "--": a work item starting with "-" isn't an option
+    _background(repo, run_id, args, "started")
+
+
+def _background(repo: Path, run_id: str, args: list[str], verb: str) -> None:
+    """Run ``advpipe <args>`` detached; print the run id on stdout and how to follow it."""
     runlog = RunLog.for_run(repo.resolve(), run_id)
     pid = start_detached(runlog, args)
     typer.echo(run_id)
     typer.echo(
-        f"started in the background (pid {pid}); output: {runlog.root / CONSOLE_LOG}\n"
+        f"{verb} in the background (pid {pid}); output: {runlog.root / CONSOLE_LOG}\n"
         f"follow it: advpipe status {run_id}   stop it: advpipe cancel {run_id}",
         err=True,
     )
@@ -243,9 +254,34 @@ def resume(
     ] = None,
     keep_worktree: KeepOpt = False,
     quiet: QuietOpt = False,
+    detach: Annotated[
+        bool,
+        typer.Option(
+            help="Resume in the background and return at once. Output goes to the run's "
+            "console.log."
+        ),
+    ] = False,
+    detached_child: Annotated[
+        bool, typer.Option(hidden=True, help="Set by --detach: run.lock already names us.")
+    ] = False,
 ) -> None:
     """Resume an interrupted run at the first stage that didn't finish."""
     cfg = load_config(config) if config else None
+    if detach:
+        try:
+            check_resumable(repo, run_id)
+        except NotResumable as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=2) from e
+        args = ["resume", run_id, "--repo", str(repo.resolve()), "--detached-child"]
+        if config is not None:
+            args += ["--config", str(config.resolve())]
+        if budget is not None:
+            args += ["--budget", repr(budget)]
+        if keep_worktree:
+            args.append("--keep-worktree")
+        _background(repo, run_id, args, "resumed")
+        return
     try:
         orch = Orchestrator.resume(
             SdkAgentRunner(),
@@ -255,6 +291,7 @@ def resume(
             budget_usd=budget,
             keep_worktree=keep_worktree,
             progress=make_progress(quiet),
+            locked_for_me=detached_child,
         )
     except NotResumable as e:
         typer.echo(str(e), err=True)

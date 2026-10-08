@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{#- A background run that has no run.json yet. #}
+{% block title %}Run {{ s.run_id }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/">← All runs</a></p>
+<h1>Run <code>{{ s.run_id }}</code></h1>
+{%- if notice %}
+<p class="notice" role="status">{{ notice }}</p>
+{%- endif %}
+{% include "_run_starting.html" %}
+{% endblock %}

@@ -354,3 +354,22 @@ pre.diff { max-height: 40rem; line-height: 1.35; }
 .check-info { color: var(--muted); }
 .form-errors { border: 1px solid var(--danger); border-radius: 6px; padding: 0 0.75rem; color: var(--danger); }
 .form-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+
+/* ---------------------------------------------------------------- actions */
+
+.run-actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin: 0.75rem 0; }
+.run-actions #action-result { flex-basis: 100%; }
+.run-actions #action-result:empty { display: none; }
+.inline-form { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.inline-form input { font: inherit; padding: 0.3rem 0.4rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.button[disabled] { opacity: 0.5; cursor: not-allowed; }
+.output { white-space: pre-wrap; overflow-wrap: anywhere; }
+.source { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem 0.9rem 0.9rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.source legend { font-weight: 600; padding: 0 0.3rem; }
+.choice { display: flex; align-items: baseline; gap: 0.5rem; }
+.field select { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.field textarea.short { min-height: 6rem; }
+.run-summary { border: 1px solid var(--border); border-radius: 6px; padding: 0 0.9rem 0.9rem; background: var(--panel); }
+.spend { font-size: 1.05em; }
+.console { max-height: 30rem; overflow: auto; }
+.runs-table .actions { white-space: nowrap; text-align: right; }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -35,6 +36,24 @@ log = logging.getLogger(__name__)
 
 class NotResumable(RuntimeError):
     pass
+
+
+def check_resumable(repo: Path, run_id: str, *, locked_for_me: bool = False) -> RunState:
+    """The run's state, if it can be resumed now. Raises NotResumable saying why not.
+
+    ``locked_for_me``: a run.lock naming this process is expected, because `advpipe resume
+    --detach` wrote this (child) process's pid there before starting it.
+    """
+    runlog = RunLog.for_run(repo.resolve(), run_id)
+    if not (runlog.root / "run.json").is_file():
+        raise NotResumable(f"no run {run_id} in {repo}")
+    state = runlog.read_state()
+    if state.status not in RESUMABLE:
+        raise NotResumable(f"run {run_id} is {state.status.value}; nothing to resume")
+    holder = runlog.lock_holder()
+    if holder is not None and not (locked_for_me and holder == os.getpid()):
+        raise NotResumable(f"run {run_id} is still being driven by pid {holder}")
+    return state
 
 
 def new_run_id() -> str:
@@ -98,17 +117,11 @@ class Orchestrator:
         budget_usd: float | None = None,
         keep_worktree: bool = False,
         progress: Callable[[str], None] | None = None,
+        locked_for_me: bool = False,
     ) -> Orchestrator:
         """Reload an interrupted run from run.json. Uses the run's saved config by default."""
+        state = check_resumable(repo, run_id, locked_for_me=locked_for_me)
         runlog = RunLog.for_run(repo.resolve(), run_id)
-        if not (runlog.root / "run.json").is_file():
-            raise NotResumable(f"no run {run_id} in {repo}")
-        state = runlog.read_state()
-        if state.status not in RESUMABLE:
-            raise NotResumable(f"run {run_id} is {state.status.value}; nothing to resume")
-        holder = runlog.lock_holder()
-        if holder is not None:
-            raise NotResumable(f"run {run_id} is still being driven by pid {holder}")
         cfg = config or runlog.read_config() or Config()
         if budget_usd is not None:
             limits = cfg.limits.model_copy(update={"budget_usd_per_task": budget_usd})
@@ -184,6 +197,9 @@ class Orchestrator:
             self._emit("run_start", f"resuming run {self.run_id} at stage {self.state.stage.value}")
             self.state.status = Status.RUNNING
             self.state.open_findings = []
+            # What it runs under from now on, e.g. after `resume --budget`, so the UI and a
+            # later resume see the new budget.
+            self.runlog.write_config(self.config)
             return Workspace.reopen(self.repo, Path(self.state.worktree), self.state.branch)
         self.runlog.write_config(self.config)
         # Readable branch: from --name if given, else from the work item's first line.

@@ -89,7 +89,7 @@ All code is in `src/advpipe/`.
 | `control.py` | Acting on runs from outside: detached start, cancel, clean | `start_detached`, `cancel_run`, `clean_run`, `ControlError` |
 | `workitem.py` | Work-item files with optional front matter | `parse_work_item`, `load_work_item`, `format_work_item`, `WorkItem` |
 | `config.py` | `pipeline.toml` loading and validation | `Config`, `load_config` |
-| `ui/` | Optional local web UI (the `ui` extra); see [The web UI](#the-web-ui) | `create_ui_app`, `GuardMiddleware`, `load_runs`, `load_detail`, `stream_events`, `item_path` |
+| `ui/` | Optional local web UI (the `ui` extra); see [The web UI](#the-web-ui) | `create_ui_app`, `GuardMiddleware`, `load_runs`, `load_detail`, `stream_events`, `item_path`, `plan_run`, `call_advpipe` |
 | `prompts/*.md` | One system prompt per role. **Source of truth** for agent behaviour. | |
 
 ## A run, step by step
@@ -332,7 +332,7 @@ It returns the final text plus `total_cost_usd` from the SDK's `ResultMessage`.
 run.json        RunState, rewritten at every transition and after every agent call
 events.jsonl    every progress event, one JSON object per line (see below)
 console.log     stdout and stderr of a run started with --detach
-config.json     the config this run started with
+config.json     the config this run runs under (rewritten on resume, e.g. after --budget)
 task.md         copy of the spec
 spec/author.txt
 stage-tests/round-N/{author.txt, diff.patch, critic.json, gates.json}
@@ -347,10 +347,12 @@ run.lock        present only while a process is driving the run
 **Resume** works at stage boundaries. When a stage finishes, its commit is stored in
 `state.commits` (`spec`, `tests`, `code`, `review`). `Orchestrator.resume`:
 
-1. Loads `run.json`. Refuses (`NotResumable`) if the run is `complete` or `needs_human`, or if
-   another live process holds the lock. Resumable statuses are `running` (interrupted),
-   `error` and `budget_exceeded` (`RESUMABLE` in `models.py`).
+1. Loads `run.json` (`check_resumable`). Refuses (`NotResumable`) if the run is `complete` or
+   `needs_human`, or if another live process holds the lock. Resumable statuses are `running`
+   (interrupted), `error` and `budget_exceeded` (`RESUMABLE` in `models.py`).
 2. Uses the run's saved `config.json` unless you pass one. `--budget` overrides the limit.
+   `_open_workspace` writes the config back to `config.json`, so a raised budget sticks: the
+   UI shows it, and a later resume uses it.
 3. Restores the budget's spent amount and per-stage totals from `run.json`.
 
 `_run` then calls `Workspace.reopen`:
@@ -425,6 +427,13 @@ stdout/stderr appended to `console.log`. It then writes the child's pid to `run.
 and exits. A work item given as text is passed after `--`, so text starting with `-` isn't read
 as an option. `--run-id` is a hidden option, used only for this.
 
+**`advpipe resume --detach`.** The same, for resuming: the parent runs `check_resumable`
+first (so a run that can't be resumed is refused at once, with nothing started), then starts
+`advpipe resume <id> ... --detached-child` and prints the run id. `--detached-child` is hidden:
+it tells the child that `run.lock` already names its own pid (the parent wrote it), which would
+otherwise read as "still being driven". Without it, any live holder, this process included, is
+refused as before.
+
 **`advpipe cancel`.** `cancel_run` reads `run.lock`, checks the process is alive and (where
 `/proc` exists) that its command line mentions `advpipe`, so a stale lock whose pid was reused
 after a reboot can't make it signal an unrelated process. It then sends `SIGINT`. In the run's
@@ -482,11 +491,12 @@ table in `report.md` (`_cost_table` in `runlog.py`).
 
 `advpipe ui` serves a local web UI (plan and milestones: [UI_PLAN.md](UI_PLAN.md); built so far:
 the skeleton, the runs list, the run detail page with its live log and spec & context tab,
-and the work-items pages). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
+the work-items pages, and the actions that start, cancel, resume and clean up runs). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
 uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
 
 - **Read-only over the files.** The UI reads `.advpipe/runs/*/run.json` and `config.json`; it
-  never holds state of its own. `ui/runs.py` (`load_runs`) turns run directories into rows,
+  never holds state of its own, and never writes run files itself: actions go through the CLI
+  (see *Actions* below). `ui/runs.py` (`load_runs`) turns run directories into rows,
   newest first. A run whose status is `running` but whose `run.lock` holder is dead is shown as
   *stopped*. An unreadable `run.json` is listed as such instead of breaking the page.
 - **Pages** are Jinja2 templates (`ui/templates/`, autoescaped, since run data includes agent
@@ -555,6 +565,42 @@ uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
   - **Forms** post with htmx, so they carry the CSRF header. A form with problems comes back
     re-rendered with status 422, which `base.html`'s `responseHandling` lets htmx swap in; other
     errors aren't swapped. Success replies with `HX-Redirect` to the next page.
+- **Actions** (`ui/actions.py` + `routes/actions.py`): start, cancel, resume, clean up. Each
+  runs the advpipe CLI (`call_advpipe`: `subprocess.run` with an argument list, never a shell,
+  `control.child_command()` as the program, a timeout, stdin from `/dev/null`), so the UI does
+  exactly what the terminal command does, with its checks. Runs are started and resumed with
+  `--detach`, so they're ordinary background processes that outlive the UI.
+  - **Which actions, when.** `VALID` maps each displayed status to its actions: *running*:
+    cancel; *stopped*, *error*, *over budget*: resume and clean; *needs you*: clean;
+    *complete*: none. Buttons are drawn from it (`RunDetail.actions`), and every action route
+    checks it again before running anything: an action that's no longer valid gets 409 with a
+    "reload" message; one the CLI refuses gets 422 with the CLI's message (escaped). `base.html`
+    lets htmx swap both into the page's `#action-result`.
+  - **New run** (`/runs/new`). `plan_run` works out what `advpipe run` would do from the
+    form (a work item via `item_path` and `load_work_item`, or a typed task; optional branch
+    name and config overrides): the effective config (form, then front matter, then
+    `pipeline.toml`, then defaults; it must be a file inside the repo and must load), its
+    budget, the branch (`advpipe/<slugify(...)>`), problems, and the argument list. Only
+    overrides are passed (`--name`, `--config`), so front matter applies as in the terminal;
+    a typed task goes after `--`. The summary (`POST /runs/new/check`) is re-fetched as the
+    form changes. It puts the budget it shows in a hidden field, and `POST /runs/start`
+    refuses if that's not the budget it works out now, so a run never starts on a budget
+    nobody saw. Success redirects to the run page with the run id `run --detach` printed
+    (checked with `check_run_id`).
+  - **Starting up.** Right after `--detach`, the run directory has `run.lock` and
+    `console.log` but no `run.json` yet. `/runs/<id>` then shows a starting-up panel
+    (`load_starting`) that polls `/runs/<id>/starting` every second, which answers with
+    `HX-Refresh` once `run.json` exists. If the process dies first, it shows the end of
+    `console.log` instead.
+  - **Cancel** asks with `hx-confirm` and runs `advpipe cancel`. **Resume** takes an optional
+    new total budget (`parse_budget`: a finite number above what's been spent; required for
+    an over-budget run) and runs `advpipe resume --detach [--budget N]`. **Clean up** has a
+    confirmation page (`clean_info`: the worktree, the branch and how many commits only it
+    has), and only its form sends `confirm=yes`; the options become `--force` and `--logs`.
+  - **Work items** link to the dialog (*Run*, and the editor's *Save & run*, which saves and
+    then opens it); nothing starts a run without the dialog.
+  - After an action, the redirect carries a `notice` key; the page maps it to a fixed text, so
+    nothing from the URL is shown.
 - **Live updates** (`ui/live.py`). `/runs/<id>/events` is a Server-Sent Events stream of
   `events.jsonl` from a byte `offset` (the page passes the size it rendered, so nothing is
   shown twice). It polls the file, sends only complete lines, and sends three event types:
