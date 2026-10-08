@@ -33,13 +33,19 @@ def start_detached(runlog: RunLog, args: list[str]) -> int:
     up. (The child rewrites the same pid when it takes the lock itself.)
     """
     runlog.root.mkdir(parents=True, exist_ok=True)
+    flags = 0
+    if sys.platform == "win32":
+        # No sessions on Windows: a new process group with its own hidden console instead, so
+        # Ctrl+C or closing the UI's console doesn't reach it.
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     with (runlog.root / CONSOLE_LOG).open("ab") as log:
         proc = subprocess.Popen(
             [*child_command(), *args],
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=sys.platform != "win32",
+            creationflags=flags,
         )
     runlog.acquire_lock(proc.pid)
     return proc.pid

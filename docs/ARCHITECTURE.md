@@ -370,7 +370,8 @@ can see what was judged. It's written before the critic is called.
 renames it over the target, so a reader polling a live run never sees a half-written file.
 
 **Locking.** `RunLog.acquire_lock` writes the current process ID to `run.lock`.
-`RunLog.lock_holder` checks whether that process is still alive (`os.kill(pid, 0)`), so a lock
+`RunLog.lock_holder` checks whether that process is still alive (`pid_alive`: `os.kill(pid, 0)`, or
+`OpenProcess` on Windows, where signal 0 means Ctrl+C), so a lock
 left behind by a crash doesn't block anything.
 
 **Run ids are path components.** `RunLog.for_run` passes every id through `check_run_id`
@@ -421,7 +422,8 @@ These live in `control.py` so the CLI stays thin and the UI can share them.
 **`advpipe run --detach`.** The parent validates everything it can first (sources, work-item
 file, config), picks the run id (`new_run_id`), and calls `start_detached`. That starts
 `python -m advpipe run ... --run-id <id>` with `subprocess.Popen` (an argument list, never a
-shell) in a new session (`start_new_session=True`), with stdin from `/dev/null` and
+shell) in a new session (`start_new_session=True`; on Windows, a new process group with a hidden
+console), with stdin from `/dev/null` and
 stdout/stderr appended to `console.log`. It then writes the child's pid to `run.lock`, so
 `cancel` works before the child has even started up. The parent prints the run id on stdout
 and exits. A work item given as text is passed after `--`, so text starting with `-` isn't read

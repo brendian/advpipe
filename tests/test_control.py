@@ -21,7 +21,7 @@ from advpipe.cli import app
 from advpipe.config import Config
 from advpipe.models import RunState, Status
 from advpipe.orchestrator import Orchestrator
-from advpipe.runlog import RunLog
+from advpipe.runlog import RunLog, pid_alive
 from advpipe.runner import Role
 
 cli = CliRunner()
@@ -34,6 +34,13 @@ def wait_for(condition: Callable[[], bool], timeout: float = 60.0) -> None:
         if time.monotonic() > deadline:
             raise AssertionError("timed out waiting")
         time.sleep(0.05)
+
+
+def test_pid_alive() -> None:
+    assert pid_alive(os.getpid())
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    assert not pid_alive(proc.pid)  # reaped, so the pid is free
 
 
 def events_text(runlog: RunLog) -> str:

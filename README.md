@@ -108,6 +108,10 @@ Want the details? See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - *Optional:* [semgrep](https://semgrep.dev) for the security scan. Without it, the security
   reviewer works from the code changes alone, and the report says so.
 
+**Windows:** runs, `--detach` and the web UI work. `advpipe cancel` (and Cancel in the UI)
+stops a run at once rather than at its next safe point; it can still be resumed. See
+[docs/WINDOWS_PLAN.md](docs/WINDOWS_PLAN.md).
+
 ## Install
 
 advpipe isn't on PyPI. Install it from source:

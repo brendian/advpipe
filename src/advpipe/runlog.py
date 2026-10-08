@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,39 @@ RUN_ID_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,99}")
 
 class RunLocked(RuntimeError):
     pass
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether process ``pid`` is running."""
+    if sys.platform == "win32":
+        # os.kill(pid, 0) means "send Ctrl+C" on Windows (and fails with WinError 87), so
+        # ask the process itself.
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        process_query_limited_information, still_active, error_access_denied = 0x1000, 259, 5
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == error_access_denied  # exists, someone else's
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # exists, owned by someone else
+    return True
 
 
 def check_run_id(run_id: str) -> str:
@@ -59,13 +93,7 @@ class RunLog:
             pid = int(self._lock.read_text().strip())
         except (FileNotFoundError, ValueError):
             return None
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return None
-        except PermissionError:
-            pass  # exists, owned by someone else
-        return pid
+        return pid if pid_alive(pid) else None
 
     def acquire_lock(self, pid: int | None = None) -> None:
         """Mark the run as driven by ``pid`` (default: this process)."""
