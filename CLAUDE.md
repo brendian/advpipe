@@ -24,6 +24,7 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'   # or: uv sync
 - `docs/ARCHITECTURE.md`: how it works. `README.md`: public usage guide. Update both when
   behaviour or CLI changes.
 - `examples/claude-hooks.json`: optional PostToolUse hook running `advpipe gates`.
+- `docs/UI_PLAN.md`: plan for the optional local web UI, in milestones (U0–U6), one per session.
 
 ## Design rules (do not drop these)
 
