@@ -1,0 +1,22 @@
+[models]
+author = "claude-opus-5-5"
+critic = "claude-sonnet-5-5"
+arbiter = "claude-opus-5-5"
+
+[limits]
+max_rounds_tests = 2
+max_rounds_code = 3
+max_turns_per_agent = 40
+budget_usd_per_task = 15.0
+gate_timeout_s = 600
+
+[gates]
+# Commands run from the worktree root. Empty list = gate skipped.
+test = ["pytest", "-q"]
+types = ["mypy", "."]
+lint = ["ruff", "check", "."]
+security = ["semgrep", "--error", "--config", "auto"]   # optional; skipped if not installed
+
+[paths]
+tests = ["tests/"]           # coder may not modify these
+standards_doc = "CLAUDE.md"  # given to the standards reviewer
