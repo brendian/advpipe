@@ -1,35 +1,24 @@
 /* advpipe UI. One hand-written stylesheet: system font, light and dark themes. */
 
 :root {
-  --bg: #ffffff;
-  --fg: #1f2328;
-  --muted: #656d76;
-  --border: #d0d7de;
-  --panel: #f6f8fa;
-  --accent: #0969da;
-  --running: #0969da;
-  --complete: #1a7f37;
-  --attention: #9a6700;
-  --danger: #cf222e;
-  --stopped: #656d76;
+  /* light-dark(light value, dark value): picked by color-scheme, which follows the system
+     unless the theme button (app.js, theme.js) set data-theme on <html>. */
+  --bg: light-dark(#ffffff, #0d1117);
+  --fg: light-dark(#1f2328, #e6edf3);
+  --muted: light-dark(#656d76, #8d96a0);
+  --border: light-dark(#d0d7de, #30363d);
+  --panel: light-dark(#f6f8fa, #161b22);
+  --accent: light-dark(#0969da, #4493f8);
+  --on-accent: light-dark(#ffffff, #0d1117); /* text on accent and danger buttons */
+  --running: light-dark(#0969da, #4493f8);
+  --complete: light-dark(#1a7f37, #3fb950);
+  --attention: light-dark(#9a6700, #d29922);
+  --danger: light-dark(#cf222e, #f85149);
+  --stopped: light-dark(#656d76, #8d96a0);
   color-scheme: light dark;
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1117;
-    --fg: #e6edf3;
-    --muted: #8d96a0;
-    --border: #30363d;
-    --panel: #161b22;
-    --accent: #4493f8;
-    --running: #4493f8;
-    --complete: #3fb950;
-    --attention: #d29922;
-    --danger: #f85149;
-    --stopped: #8d96a0;
-  }
-}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 
@@ -150,7 +139,6 @@ button.copy {
   cursor: pointer;
 }
 button.copy:hover { border-color: var(--accent); }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* The timeline strip: one box per step. */
 .timeline { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0; margin: 0 0 1rem; }
@@ -310,8 +298,8 @@ pre.diff { max-height: 40rem; line-height: 1.35; }
   cursor: pointer;
 }
 .button:hover { border-color: var(--accent); }
-.button.primary { background: var(--accent); border-color: var(--accent); color: #ffffff; }
-.button.danger { background: var(--danger); border-color: var(--danger); color: #ffffff; }
+.button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.button.danger { background: var(--danger); border-color: var(--danger); color: var(--on-accent); }
 
 .item-group h2 { display: flex; align-items: baseline; gap: 0.75rem; }
 .items-table { width: 100%; border-collapse: collapse; }
@@ -320,7 +308,7 @@ pre.diff { max-height: 40rem; line-height: 1.35; }
 .items-table th:nth-child(1) { width: 50%; }
 .items-table th:nth-child(2) { width: 18%; }
 .items-table th:nth-child(3) { width: 12%; }
-.items-table td { overflow-wrap: anywhere; }
+.items-table td:first-child { overflow-wrap: anywhere; }
 .items-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 0.85em; }
 .items-table th, .items-table td { padding: 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 .items-table .title { font-weight: 600; }
@@ -373,3 +361,80 @@ pre.diff { max-height: 40rem; line-height: 1.35; }
 .spend { font-size: 1.05em; }
 .console { max-height: 30rem; overflow: auto; }
 .runs-table .actions { white-space: nowrap; text-align: right; }
+
+/* ---------------------------------------------------------------- help */
+
+.toc ul { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; list-style: none; padding: 0; }
+.help-block { border-top: 1px solid var(--border); padding-top: 0.25rem; margin-top: 1.5rem; }
+.help-steps li { margin-bottom: 0.5rem; }
+.help-defs { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; }
+.help-defs div { display: contents; }
+.help-defs dt { font-weight: 600; }
+.help-defs dd { margin: 0; }
+.help-table { width: 100%; border-collapse: collapse; }
+.help-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 0.85em; }
+.help-table th, .help-table td { padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.help-table .sub { font-size: 0.85em; }
+.help-table .chip { cursor: default; }
+.nowrap { white-space: nowrap; }
+kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 0.3rem;
+}
+.table-wrap { overflow-x: auto; }
+
+/* ---------------------------------------------------------------- theme, keyboard */
+
+.theme-toggle {
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.6rem;
+  cursor: pointer;
+}
+.theme-toggle:hover { border-color: var(--accent); }
+
+/* Keyboard focus: a clear ring on everything focusable, never removed. Mouse clicks don't
+   show it (:focus-visible), except in text fields, where the browser always does. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.button.primary:focus-visible, .button.danger:focus-visible { outline-color: var(--fg); }
+.field input:focus, .field textarea:focus, .field select:focus, .inline-form input:focus { border-color: var(--accent); }
+summary:focus-visible { outline-offset: -2px; border-radius: 6px; }
+.tabs a:focus-visible, .timeline .step a:focus-visible { outline-offset: 0; }
+
+/* "Skip to content": the first thing Tab reaches, shown only when focused. */
+.skip-link {
+  position: absolute;
+  left: 0.5rem;
+  top: -3rem;
+  z-index: 10;
+  background: var(--bg);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 0.35rem 0.75rem;
+}
+.skip-link:focus { top: 0.5rem; }
+main:focus { outline: none; }
+
+/* ---------------------------------------------------------------- narrower screens */
+
+/* Tablets (down to 768px wide): less padding, and tables that fit. */
+@media (max-width: 900px) {
+  .topbar { padding: 0.5rem 1rem; gap: 0.75rem; flex-wrap: wrap; }
+  .topbar nav { gap: 0.75rem; }
+  main { padding: 0.75rem 1rem 2rem; }
+  .items-table th:nth-child(1) { width: 40%; }
+  .items-table th:nth-child(2) { width: 20%; }
+  .items-table th:nth-child(3) { width: 16%; }
+  .items-table .actions, .runs-table .actions { white-space: normal; }
+  .items-table .actions a { display: inline-block; margin: 0 0 0.3rem 0.6rem; }
+}
+

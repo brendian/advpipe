@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{#- The pipeline in plain words. The tables come from the code the pipeline and the other pages
+    use (routes/help.py), so they say what advpipe really does. #}
+{% block title %}Help{% endblock %}
+{% block content %}
+<h1>How advpipe works</h1>
+<p class="lead">advpipe takes one task, a <strong>work item</strong>, and has a team of AI agents
+  build it on a new git branch. Every piece of work is checked by a second agent whose only job is
+  to find what's wrong with it, and by your project's own tests and checks. When it's done, the
+  branch waits for you: advpipe never merges or pushes.</p>
+
+<nav class="toc" aria-label="On this page">
+  <ul>
+    <li><a href="#steps">The steps</a></li>
+    <li><a href="#agents">The agents</a></li>
+    <li><a href="#checks">Checks</a></li>
+    <li><a href="#statuses">Run statuses</a></li>
+    <li><a href="#pages">Using this UI</a></li>
+    <li><a href="#safety">Money and safety</a></li>
+    <li><a href="#words">Words used here</a></li>
+  </ul>
+</nav>
+
+<section class="help-block" id="steps">
+  <h2>The steps</h2>
+  <p>Every run goes through the same steps, in this order. The program running them is ordinary
+    code, not an agent, so no step is ever skipped.</p>
+  <ol class="help-steps">
+    <li><strong>SPEC.</strong> The spec writer turns your work item into <code>task.md</code>: what
+      to build, as numbered <em>acceptance criteria</em> (AC1, AC2, ...), plus anything unclear as
+      <em>open questions</em>. A question marked <code>BLOCKING</code> stops the run here, for you to
+      answer.</li>
+    <li><strong>TESTS.</strong> The test author writes tests for the criteria, before any code
+      exists, and the tests must fail (there's nothing to pass yet). The test critic looks for
+      gaps. Up to {{ limits.max_rounds_tests }} rounds by default.</li>
+    <li><strong>CODE.</strong> The coder changes the code until the tests and checks pass, without
+      touching the tests. The code critic looks for bugs and unmet criteria. Up to
+      {{ limits.max_rounds_code }} rounds by default.</li>
+    <li><strong>REVIEW.</strong> A standards reviewer and a security reviewer each read the whole
+      change once, at the same time. There's no back-and-forth with them: anything they say must be
+      fixed goes to the arbiter.</li>
+    <li><strong>ARBITER.</strong> Only if must-fix findings are still open after a step (after its
+      last round, or from the reviewers). The arbiter decides, for each, <em>fix</em> or
+      <em>dismiss</em>, with a reason; a failed check is always <em>fix</em>. If anything is to be
+      fixed, the author gets one more pass and the checks run again. Usually it isn't needed.</li>
+    <li><strong>FINAL CHECKS.</strong> All checks run once more on the finished branch. Green means
+      the run is <em>complete</em>.</li>
+  </ol>
+  <p>A <strong>round</strong> is one try by the author, followed by the checks and the critic's
+    verdict. If the critic says PASS, the step is done. If not, the author gets the findings and
+    tries again, up to the round limit. What's still open then goes to the arbiter.</p>
+  <p>On a run's page the timeline shows each step as:</p>
+  <dl class="help-defs">
+    {%- for label, meaning in step_states %}
+    <div><dt>{{ label }}</dt><dd>{{ meaning }}</dd></div>
+    {%- endfor %}
+  </dl>
+</section>
+
+<section class="help-block" id="agents">
+  <h2>The agents</h2>
+  <p>Each agent has one job and its own instructions (its <em>role prompt</em>: see a run's
+    <em>Spec &amp; context</em> tab). Only one agent changes files at a time. Critics and reviewers
+    only read: they return <em>findings</em>, never edits. And they judge the work itself (the
+    spec, the diff and the check output), never the author's explanation of it.</p>
+  <div class="table-wrap">
+  <table class="help-table">
+    <thead><tr><th scope="col">Agent</th><th scope="col">Its job</th><th scope="col">What it's given</th><th scope="col">Default model</th></tr></thead>
+    <tbody>
+      {%- for r in roles %}
+      <tr>
+        <td><strong>{{ r.role }}</strong><div class="sub muted">{{ "changes files" if r.writes else "read-only" }}</div></td>
+        <td>{{ r.job }}</td>
+        <td>{{ r.inputs }}</td>
+        <td><code class="nowrap">{{ r.model }}</code></td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted">The models, round limits and budget can be changed in your
+    <code>pipeline.toml</code>; a run's <em>Spec &amp; context</em> tab shows the ones it used.</p>
+</section>
+
+<section class="help-block" id="checks">
+  <h2>Checks</h2>
+  <p>Checks are your project's own commands, run by advpipe itself, not by an agent. Their result
+    is facts, not opinion: a check that fails always counts as a problem that must be fixed,
+    whatever a critic says. (In the config file and on the command line they're called
+    <em>gates</em>.)</p>
+  <ul>
+    {%- for name, what in checks %}
+    <li><code>{{ name }}</code>: {{ what }}.</li>
+    {%- endfor %}
+  </ul>
+</section>
+
+<section class="help-block" id="statuses">
+  <h2>Run statuses</h2>
+  <div class="table-wrap">
+  <table class="help-table">
+    <thead><tr><th scope="col">Status</th><th scope="col">What it means</th><th scope="col">What to do</th></tr></thead>
+    <tbody>
+      {%- for key, info, next in statuses %}
+      <tr>
+        <td><span class="chip chip-{{ key }}">{{ info.icon }} {{ info.label }}</span></td>
+        <td>{{ info.help }}</td>
+        <td>{{ next }}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p>A <strong>finding</strong> is one problem a critic or reviewer reports. It must point at a
+    file and line, or at an acceptance criterion. <em>Blocking</em> findings must be fixed (or
+    dismissed by the arbiter) before the run can finish; <em>minor</em> ones are noted in the
+    report.</p>
+</section>
+
+<section class="help-block" id="pages">
+  <h2>Using this UI</h2>
+  <ul>
+    <li><a href="/">Runs</a> lists every run in this repo, newest first, and updates itself. Click a
+      run for its page: status and cost, the live log, the timeline with every round (what the author
+      replied, the check results, the diff the critic judged, its findings), the report, and the
+      commands to run next.</li>
+    <li><a href="/items">Work items</a> are markdown files describing one task each, kept in your
+      repo. Write and edit them here, then <em>Run</em> one. Saving writes the file; committing it is
+      up to you.</li>
+    <li><a href="/runs/new">New run</a> shows the branch it will make, the config it uses and how much
+      it can spend, before anything starts. Runs carry on in the background, even if you close this
+      page or stop the UI.</li>
+    <li>A run's buttons (<em>Cancel</em>, <em>Resume</em>, <em>Clean up</em>) only show when they make
+      sense. Each one does exactly what the same <code>advpipe</code> command does in a terminal.</li>
+    <li>Everything here can also be done from a terminal: <code>advpipe --help</code> lists the
+      commands. Runs started there show up here too.</li>
+    <li>Theme: the button at the top right switches between your system's setting, light and
+      dark. Everything can be used with the keyboard: <kbd>Tab</kbd> moves between links and
+      buttons, and <kbd>Enter</kbd> opens a step or round.</li>
+  </ul>
+</section>
+
+<section class="help-block" id="safety">
+  <h2>Money and safety</h2>
+  <ul>
+    <li><strong>Every run has a budget</strong> ({{ "$%.2f" | format(limits.budget_usd_per_task) }}
+      by default). It stops when it's spent, and you can resume it with a bigger one. The New run
+      dialog says how much a run can spend before you start it.</li>
+    <li><strong>Agents work in a separate copy</strong> of your repo (a git worktree), on their own
+      branch. Your working copy and branches aren't touched.</li>
+    <li><strong>Nothing is merged or pushed.</strong> Merging is your decision; the run page gives
+      you the commands to copy.</li>
+    <li><strong>This UI is for this computer only.</strong> It listens on 127.0.0.1 and needs the
+      link with the token that <code>advpipe ui</code> printed. Don't share that link: anyone with
+      it could start runs, which spend money and run commands.</li>
+  </ul>
+</section>
+
+<section class="help-block" id="words">
+  <h2>Words used here</h2>
+  <dl class="help-defs">
+    <div><dt>work item</dt><dd>The task you give advpipe, in a few lines of plain text.</dd></div>
+    <div><dt>task.md</dt><dd>The spec the spec writer makes from it. Every later agent works from
+      this, not from the work item.</dd></div>
+    <div><dt>acceptance criteria</dt><dd>The numbered, testable statements in task.md that say when
+      the work is done.</dd></div>
+    <div><dt>author / critic</dt><dd>The agent that does a step's work, and the one that checks
+      it.</dd></div>
+    <div><dt>finding</dt><dd>One problem a critic or reviewer reports: blocking or minor.</dd></div>
+    <div><dt>round</dt><dd>One try by the author, then the checks and the critic's verdict.</dd></div>
+    <div><dt>checks (gates)</dt><dd>Your project's tests, type checker, linter and security scanner,
+      run by advpipe.</dd></div>
+    <div><dt>run id</dt><dd>The name of a run's folder, <code>.advpipe/runs/&lt;run id&gt;/</code>, which
+      holds everything it did.</dd></div>
+  </dl>
+</section>
+{% endblock %}

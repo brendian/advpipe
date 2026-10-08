@@ -489,10 +489,13 @@ table in `report.md` (`_cost_table` in `runlog.py`).
 
 ## The web UI
 
-`advpipe ui` serves a local web UI (plan and milestones: [UI_PLAN.md](UI_PLAN.md); built so far:
-the skeleton, the runs list, the run detail page with its live log and spec & context tab,
-the work-items pages, and the actions that start, cancel, resume and clean up runs). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
-uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
+`advpipe ui` serves a local web UI (plan and milestones: [UI_PLAN.md](UI_PLAN.md), all built:
+the runs list, the run detail page with its live log and spec & context tab, the work-items
+pages, the actions that start, cancel, resume and clean up runs, and the Help page). It lives
+in `src/advpipe/ui/` and needs the `ui` extra (FastAPI, uvicorn, Jinja2). `cli.ui` imports it
+lazily, so the core CLI works without it. The README's *Using the web UI* has screenshots,
+made by `scripts/ui_screenshots.py` (a demo repo built with `tests/fakes.py`, served, and shot
+with headless Chromium).
 
 - **Read-only over the files.** The UI reads `.advpipe/runs/*/run.json` and `config.json`; it
   never holds state of its own, and never writes run files itself: actions go through the CLI
@@ -611,6 +614,27 @@ uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
   header in place, the timeline and report out of band; `delay:300ms`, not `throttle`, which
   would drop the final refresh), and closes on `end`. `app.js` keeps each `<details>` panel
   open or closed across refreshes. Finished runs get a static page with no stream.
+- **Help** (`/help`, `routes/help.py`): the pipeline in plain words. Its tables are built from
+  the code the rest uses (`runs.STATUSES`, `detail.STEP_STATES`, `runner.ROLE_TOOLS` and
+  `ROLE_MODEL`, `context.ROLE_INPUTS` and `CHECK_HELP`, `Config()` defaults), so the round caps,
+  budget, models and who-sees-what it quotes can't drift. Its own text (`STATUS_NEXT`,
+  `ROLE_JOBS`) must cover every status and role; a test checks that.
+- **Errors.** Routes render their own error pages (`error.html`). Errors FastAPI raises itself
+  (no such route: 404, wrong method: 405) go through an exception handler in `create_ui_app`
+  to the same template, with the nav, never echoing the URL.
+- **Look and feel** (`static/app.css`, one file). Every colour is a custom property set with
+  `light-dark(light, dark)`, so there's one list of colours and both themes come from it.
+  `color-scheme` picks the side: the system's setting, unless `<html data-theme="light|dark">`
+  overrides it. The *Theme* button in the top bar (`app.js`) cycles system, dark, light and
+  keeps the choice in `localStorage`; `static/theme.js`, loaded in `<head>` *without* `defer`,
+  applies it before the first paint so pages don't flash the other theme. (Both are files, as
+  the CSP allows no inline script.) The button is `hidden` in the HTML and shown by `app.js`,
+  so it never appears where it couldn't work. Keyboard: a *Skip to content* link is the first
+  Tab stop, `<main id="content" tabindex="-1">` takes the focus, and `:focus-visible` gives
+  every focusable element a ring (nothing removes outlines). One `@media (max-width: 900px)`
+  block fits the pages to tablet width (768 px): less padding, a wrapping top bar, and the
+  work-items table's actions wrapping instead of overflowing. Wide content (`pre`, commands,
+  the Help tables in `.table-wrap`) scrolls inside its box.
 - **`create_ui_app(repo, items_dir, token)`** builds the FastAPI app: routes from
   `ui/routes/`, static files, and `GuardMiddleware` (`ui/security.py`), a pure ASGI middleware
   (so it won't buffer the streaming responses later milestones add) that, for every request:
@@ -679,6 +703,13 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   broken files opening in the editor; the inline checks; the list's grouping, last runs and
   git states; deleting only after confirming; path traversal (`../`, absolute, `%2e%2e`,
   backslashes, symlinks out) on every route; and token and CSRF on every route.
+- `test_ui_polish.py`: the Help page (every step, status, role and check, the real defaults,
+  token required, GET only); HTML 404/405 pages that don't echo the URL; empty states that say
+  what to do next; and on every page the skip link, the theme button and script, and no inline
+  script or style. It also checks the stylesheet: every colour has a light and a dark value,
+  focus rings are never removed, and the tablet rules exist. The theme button and keyboard path
+  were checked in a real browser (headless Chromium) when they were built; there are no
+  browser tests in the suite.
 
 ## Extending it
 

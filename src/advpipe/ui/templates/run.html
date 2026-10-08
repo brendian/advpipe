@@ -19,7 +19,12 @@
       {%- endfor %}
     </ol>
     {%- if not events %}
-    <p class="muted">No events recorded{% if d.live %} yet{% endif %}.</p>
+    {%- if d.live %}
+    <p class="muted">No events yet: the run is just starting. New lines appear here by themselves.</p>
+    {%- else %}
+    <p class="muted">No progress was recorded for this run (runs made before advpipe kept an event
+      log have none). The timeline and report below still show what happened.</p>
+    {%- endif %}
     {%- endif %}
   </details>
 

@@ -52,4 +52,36 @@
     });
   });
   document.addEventListener("htmx:afterSettle", function () { panels = null; });
+
+  // Theme button: system setting -> dark -> light -> system. The choice is kept in this
+  // browser's storage; theme.js applies it on the next page before it's drawn.
+  var THEMES = ["system", "dark", "light"];
+  var themeButton = document.getElementById("theme-toggle");
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") || "system";
+  }
+  function showTheme() {
+    var theme = currentTheme();
+    themeButton.textContent = "Theme: " + theme;
+    themeButton.setAttribute("aria-label", "Colour theme: " + theme + ". Change it");
+  }
+  if (themeButton) {
+    themeButton.hidden = false;
+    showTheme();
+    themeButton.addEventListener("click", function () {
+      var next = THEMES[(THEMES.indexOf(currentTheme()) + 1) % THEMES.length];
+      if (next === "system") {
+        document.documentElement.removeAttribute("data-theme");
+      } else {
+        document.documentElement.setAttribute("data-theme", next);
+      }
+      try {
+        if (next === "system") window.localStorage.removeItem("advpipe-theme");
+        else window.localStorage.setItem("advpipe-theme", next);
+      } catch (e) {
+        // Storage blocked: the choice lasts for this page only.
+      }
+      showTheme();
+    });
+  }
 })();
