@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{#- The spec & context tab: everything the agents of one run worked from. Everything from the
+    run directory, the repo or the prompts is autoescaped; `| safe` only follows
+    ui/render.py's markdown renderers, which escape raw HTML themselves. #}
+{% macro seen_by(text) -%}
+<p class="seen-by"><strong>Who sees this:</strong> {{ text }}</p>
+{%- endmacro %}
+{% block title %}Spec & context · {{ c.title }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/">← All runs</a></p>
+{% with run_id = c.run_id %}{% include "_run_tabs.html" %}{% endwith %}
+<h1>{{ c.title }} <span class="chip chip-{{ c.status }}" title="{{ c.info.help }}">{{ c.info.icon }} {{ c.info.label }}</span></h1>
+<p class="lead">Everything the agents in this run worked from, and who sees what. Critics and
+  reviewers judge artifacts only: task.md, the diff and the check output, never an author's reasoning.</p>
+{%- if c.live %}
+<p class="muted">This run is still going. Reload the page to see files it writes later.</p>
+{%- endif %}
+
+<section class="ctx-block" id="ctx-work-item">
+  <h2>Work item</h2>
+  {{ seen_by(c.seen_by.work_item) }}
+  {%- if c.work_item.file %}
+  <p>From the file <code>{{ c.work_item.file }}</code> <span class="muted">(as it was when the run started)</span></p>
+  {%- endif %}
+  {%- if c.work_item.html is not none %}
+  <div class="prose doc">{{ c.work_item.html | safe }}</div>
+  {%- else %}
+  <p class="empty warning">This run's work item is empty, so the spec writer had nothing to work from.
+    Start a new run with the task written out, for example <code>advpipe run --item FILE</code>.</p>
+  {%- endif %}
+</section>
+
+<section class="ctx-block" id="ctx-task">
+  <h2><code>task.md</code>: the spec</h2>
+  {{ seen_by(c.seen_by.task_md) }}
+  {%- if c.task is none %}
+  {%- if c.live %}
+  <p class="empty muted">No <code>task.md</code> yet: the spec writer is still working on it. Reload in a minute.</p>
+  {%- else %}
+  <p class="empty muted">This run has no <code>task.md</code>: it stopped before the spec writer wrote one.
+    The Progress tab and the report say why.</p>
+  {%- endif %}
+  {%- else %}
+  <p class="task-counts">
+    <span class="tag">{{ c.task.criteria }} acceptance criteria</span>
+    <span class="tag">{{ c.task.questions }} open question{{ "" if c.task.questions == 1 else "s" }}</span>
+    {%- if c.task.blocking %}
+    <span class="tag tag-blocking">{{ c.task.blocking }} blocking</span>
+    {%- endif %}
+  </p>
+  {%- if c.task.blocking %}
+  <p class="callout">Questions marked <strong>BLOCKING</strong> stop the pipeline after the spec, for a
+    person to answer. Answer them in the work item and start a new run.</p>
+  {%- endif %}
+  {%- if "ac" not in c.task.sections %}
+  <p class="warning">This <code>task.md</code> has no "Acceptance criteria" section, so critics have no criteria to cite.</p>
+  {%- endif %}
+  <div class="prose doc task-md">{{ c.task.html | safe }}</div>
+  {%- endif %}
+</section>
+
+<section class="ctx-block" id="ctx-config">
+  <h2>Config and checks</h2>
+  {{ seen_by(c.seen_by.config) }}
+  {%- if c.config.raw is none %}
+  <p class="empty muted">This run has no <code>config.json</code>, so the settings it used weren't recorded.
+    Runs write it when they start.</p>
+  {%- elif c.config.config is none %}
+  <p class="empty warning"><code>config.json</code> couldn't be read: {{ c.config.error }}</p>
+  <pre class="output">{{ c.config.raw }}</pre>
+  {%- else %}
+  {%- set limits = c.config.config.limits %}
+  <dl class="run-meta">
+    <div><dt>Budget</dt><dd>${{ "%.2f" | format(limits.budget_usd_per_task) }}</dd></div>
+    <div><dt>Rounds</dt><dd>tests ≤ {{ limits.max_rounds_tests }}, code ≤ {{ limits.max_rounds_code }}</dd></div>
+    <div><dt>Turns per agent</dt><dd>≤ {{ limits.max_turns_per_agent }}</dd></div>
+    <div><dt>Check timeout</dt><dd>{{ limits.gate_timeout_s }} s</dd></div>
+  </dl>
+  <h3>Checks</h3>
+  {{ seen_by(c.seen_by.checks) }}
+  <table class="checks">
+    <thead><tr><th scope="col">Check</th><th scope="col">Command</th><th scope="col">What it is</th></tr></thead>
+    <tbody>
+      {%- for k in c.checks %}
+      <tr><td>{{ k.name }}</td><td>{% if k.command %}<code>{{ k.command }}</code>{% else %}<span class="muted">off (no command)</span>{% endif %}</td><td>{{ k.help }}</td></tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  <details class="reply" id="ctx-config-raw">
+    <summary><code>config.json</code> as recorded</summary>
+    <pre class="output">{{ c.config.raw }}</pre>
+  </details>
+  {%- endif %}
+</section>
+
+<section class="ctx-block" id="ctx-standards">
+  <h2>Standards doc: <code>{{ c.standards.path }}</code></h2>
+  {{ seen_by(c.seen_by.standards) }}
+  {%- if c.standards.html is not none %}
+  <p class="muted">The copy {{ c.standards.source }}.</p>
+  <div class="prose doc">{{ c.standards.html | safe }}</div>
+  {%- elif c.standards.source %}
+  <p class="empty warning">Not shown: {{ c.standards.source }}.</p>
+  {%- else %}
+  <p class="empty muted">There's no <code>{{ c.standards.path }}</code> in the repo, so the standards reviewer
+    was told "(no standards doc found)" and judged conventions from the code alone. Add one to set
+    the house rules.</p>
+  {%- endif %}
+</section>
+
+<section class="ctx-block" id="ctx-prompts">
+  <h2>Role prompts</h2>
+  {{ seen_by(c.seen_by.prompts) }}
+  {%- if c.config.config is none %}
+  <p class="muted">Models shown are advpipe's defaults: this run's config wasn't readable.</p>
+  {%- endif %}
+  {%- for r in c.roles %}
+  <details class="reply role" id="role-{{ r.role.value }}">
+    <summary><strong>{{ r.name }}</strong> <span class="muted">· {{ r.model }} · {{ r.tools | join(", ") }}</span>
+      {%- if "Edit" not in r.tools and "Write" not in r.tools %} <span class="tag">read-only</span>{% endif %}</summary>
+    <p><strong>Gets in its prompt:</strong> {{ r.inputs }}.</p>
+    {%- if r.prompt is not none %}
+    <div class="prose doc">{{ r.prompt | safe }}</div>
+    {%- else %}
+    <p class="empty warning">Its prompt file couldn't be read from the installed advpipe.</p>
+    {%- endif %}
+  </details>
+  {%- endfor %}
+</section>
+{% endblock %}

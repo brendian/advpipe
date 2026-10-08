@@ -206,7 +206,7 @@ Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .
   (`running`, `complete`, `needs_human`, `budget_exceeded`, `error`); agent text containing HTML
   is escaped.
 
-**U3: spec & context tab.**
+**U3: spec & context tab.** *(done)*
 - Work item, `task.md` (with acceptance criteria and open-question highlighting), `config.json`
   and checks, standards doc, and role prompts, each with "who sees this".
 - Tests: each block is present, and a missing file shows a clear empty state.

@@ -476,7 +476,7 @@ table in `report.md` (`_cost_table` in `runlog.py`).
 ## The web UI
 
 `advpipe ui` serves a local web UI (plan and milestones: [UI_PLAN.md](UI_PLAN.md); built so far:
-the skeleton, the runs list, and the run detail page with its live log). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
+the skeleton, the runs list, and the run detail page with its live log and spec & context tab). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
 uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
 
 - **Read-only over the files.** The UI reads `.advpipe/runs/*/run.json` and `config.json`; it
@@ -506,6 +506,19 @@ uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
   - the **report**: `report.md` rendered by `ui/render.py`: markdown-it with raw HTML escaped,
     unsafe link schemes dropped, and table alignment turned into classes (the CSP blocks
     inline styles).
+- **Spec & context tab** (`/runs/<id>/context`, `ui/context.py`). `load_context` gathers what
+  the run's agents worked from: the work item (`RunState.work_item` and `work_item_file`),
+  `task.md`, `config.json` (shown raw if it doesn't validate) with its check commands, the
+  standards doc, and the eight role prompts (`runner.load_prompt`, as installed now) with each
+  role's model, tools and prompt inputs. `SEEN_BY` and `ROLE_INPUTS` hold the "who sees this"
+  text; they describe what `stages.py` puts in each prompt, so change them together.
+  `task.md` goes through `render.task_markdown`, a second markdown-it instance with a core
+  rule that adds classes to the *Acceptance criteria* and *Open questions* headings and their
+  top-level items (`blocking` for the `BLOCKING:` forms `stages.blocking_open_questions`
+  accepts) and counts them. The standards doc is read with `git cat-file blob <rev>:<path>`
+  from the run's branch, then its base commit, then the repo's working tree. The revision
+  must match a ref-name pattern with no leading `-`, and the path must be relative with no
+  `..`, so values from `run.json`/`config.json` can't become git options or leave the repo.
 - **Live updates** (`ui/live.py`). `/runs/<id>/events` is a Server-Sent Events stream of
   `events.jsonl` from a byte `offset` (the page passes the size it rendered, so nothing is
   shown twice). It polls the file, sends only complete lines, and sends three event types:

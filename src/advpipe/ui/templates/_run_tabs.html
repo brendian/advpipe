@@ -1,0 +1,5 @@
+{#- The run's two tabs. `tab` is "progress" or "context"; `run_id` the run. #}
+<nav class="tabs" aria-label="Run">
+  <a href="/runs/{{ run_id }}"{% if tab == "progress" %} aria-current="page"{% endif %}>Progress</a>
+  <a href="/runs/{{ run_id }}/context"{% if tab == "context" %} aria-current="page"{% endif %}>Spec &amp; context</a>
+</nav>

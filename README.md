@@ -402,6 +402,21 @@ Click a run to open its page:
   critic's verdict with its findings. SPEC also shows `task.md`; ARBITER shows its rulings.
 - **Report:** `report.md`, once the run has finished.
 
+The run page has a second tab, **Spec & context**: everything the agents worked from, each
+with a note on which agents see it (critics and reviewers only ever see `task.md`, the diff and
+check output, never an author's reasoning):
+
+- **Work item:** the text the run started from, and the file it came from (`--item`).
+- **`task.md`:** the spec, with its acceptance criteria and open questions highlighted, and
+  `BLOCKING` questions (the ones that stop the run for you) in red.
+- **Config and checks:** the budget, round caps and turn limit the run used, each check's
+  command (or "off"), and the recorded `config.json`.
+- **Standards doc:** the `CLAUDE.md` (or whatever `paths.standards_doc` names) the standards
+  reviewer was given, read from the run's branch.
+- **Role prompts:** all eight, with each role's model, tools, and what goes into its prompt.
+
+A file the run hasn't written (yet) says so, and what that means.
+
 - It only reads the run files. Closing it doesn't affect any run.
 - It's for this machine only: it listens on `127.0.0.1`, and every request needs the token from
   the link (it's kept in a cookie after the first visit). A new token is made each time you
