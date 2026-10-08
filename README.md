@@ -372,6 +372,31 @@ It refuses:
 - **branches with commits no other branch has**, unless you pass `--force`. It shows the
   `git log` command to look at them first.
 
+### `advpipe ui`
+
+```sh
+pip install -e '.[ui]'     # once: the web UI's extra packages
+advpipe ui [--repo PATH] [--port 8765] [--items-dir work-items]
+```
+
+Serves a small web page for watching runs in your browser. It prints a link like
+`http://127.0.0.1:8765/?token=...`: open that. The page lists every run in the repo, newest
+first, with its status, stage and round, cost (against the budget while it's running) and age.
+It refreshes itself every few seconds, so runs started from a terminal (or with `--detach`) show
+up and move along by themselves. Hover over a status to see what it means. Filters show all
+runs, running ones, ones that need you (`needs you`, `stopped`, `over budget`, `error`), or
+complete ones.
+
+- It only reads the run files. Closing it doesn't affect any run.
+- It's for this machine only: it listens on `127.0.0.1`, and every request needs the token from
+  the link (it's kept in a cookie after the first visit). A new token is made each time you
+  start it. `--host` with anything else is refused unless you also pass
+  `--i-know-this-is-exposed`. Don't: the UI will be able to start runs, which spend money and run
+  commands.
+- One repo per `advpipe ui`. To watch several repos, start one per repo on different ports.
+- `--items-dir` is where your work-item files live, relative to the repo. (Managing them from the
+  UI comes in a later version; see [docs/UI_PLAN.md](docs/UI_PLAN.md).)
+
 ### `advpipe gates`
 
 ```sh
@@ -473,6 +498,8 @@ Read this before pointing advpipe at anything important.
 - **Your code is sent to the Claude API** as part of the agents' work, as with any AI coding
   tool.
 - **Review before merging.** The pipeline makes your review faster; it doesn't replace it.
+- **The web UI is local only.** `advpipe ui` listens on `127.0.0.1` and needs the token it
+  prints. Don't expose it to a network.
 
 ## Using it inside Claude Code (no Python)
 
@@ -587,7 +614,7 @@ Disputes are never argued back and forth; and failing checks can't be disputed a
 ## Developing advpipe
 
 ```sh
-pip install -e '.[dev]'
+pip install -e '.[dev,ui]'   # without the ui extra, the web UI tests are skipped
 pytest                    # the full pipeline is tested with scripted fake agents: no API calls
 ruff check . && ruff format --check .
 mypy --strict src/

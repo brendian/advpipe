@@ -1,4 +1,4 @@
-"""Command line interface: `advpipe run | resume | cancel | clean | status | report | gates`."""
+"""The CLI: `advpipe run | resume | cancel | clean | status | report | ui | gates`."""
 
 from __future__ import annotations
 
@@ -352,6 +352,66 @@ def report(run_id: RunIdArg, repo: RepoOpt = Path(".")) -> None:
         typer.echo(f"no report for run {run_id}", err=True)
         raise typer.Exit(code=2)
     typer.echo(path.read_text(), nl=False)
+
+
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+@app.command()
+def ui(
+    repo: RepoOpt = Path("."),
+    port: Annotated[int, typer.Option(min=1, max=65535, help="Port to serve on.")] = 8765,
+    items_dir: Annotated[
+        Path, typer.Option(help="Work-items folder, relative to the repo.")
+    ] = Path("work-items"),
+    host: Annotated[
+        str, typer.Option(help="Address to serve on. Only this machine (127.0.0.1) by default.")
+    ] = "127.0.0.1",
+    i_know_this_is_exposed: Annotated[
+        bool,
+        typer.Option(
+            "--i-know-this-is-exposed",
+            help="Allow a --host other than this machine. Anyone with the link can start runs.",
+        ),
+    ] = False,
+) -> None:
+    """Serve the local web UI: watch runs in a browser. Needs: pip install -e '.[ui]'."""
+    if not repo.is_dir():
+        raise typer.BadParameter(f"not a directory: {repo}", param_hint="--repo")
+    exposed = host not in LOOPBACK
+    if exposed and not i_know_this_is_exposed:
+        raise typer.BadParameter(
+            f"refusing to serve on {host}: the UI can start runs, which spend money and run "
+            "commands. It's meant for this machine only (127.0.0.1). Pass "
+            "--i-know-this-is-exposed to do it anyway.",
+            param_hint="--host",
+        )
+    try:
+        import uvicorn
+
+        from advpipe.ui.app import create_ui_app
+        from advpipe.ui.security import LOOPBACK_HOSTS, new_token
+    except ImportError as e:
+        typer.echo(
+            f"the web UI needs extra packages ({e.name} is missing): pip install -e '.[ui]'",
+            err=True,
+        )
+        raise typer.Exit(code=2) from e
+    token = new_token()
+    # Exposed: browsers will send whatever name reaches this machine, so the Host check is off.
+    allowed = None if exposed else LOOPBACK_HOSTS
+    web_app = create_ui_app(repo, items_dir, token, allowed_hosts=allowed)
+    if exposed:
+        typer.echo(
+            f"WARNING: serving on {host}, not just this machine. Anyone who can reach it and "
+            "gets the link can start runs on your account.",
+            err=True,
+        )
+    url_host = f"[{host}]" if ":" in host else host
+    typer.echo(f"advpipe ui for {repo.resolve()}")
+    typer.echo(f"open: http://{url_host}:{port}/?token={token}")
+    typer.echo("stop: Ctrl-C (runs started elsewhere keep going)")
+    uvicorn.run(web_app, host=host, port=port, log_level="warning")
 
 
 GATE_NAMES = ("test", "types", "lint", "security")

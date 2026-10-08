@@ -1,0 +1,47 @@
+{#- Re-fetched every few seconds; it replaces itself, so polling carries on. #}
+<section id="runs" class="runs"
+         hx-get="/runs/list?show={{ show }}"
+         hx-trigger="every {{ refresh_seconds }}s"
+         hx-swap="outerHTML">
+  <nav class="filters" aria-label="Filter runs">
+    {% for key, (label, _) in filters.items() %}
+    <a href="/?show={{ key }}"{% if key == show %} aria-current="true"{% endif %}>{{ label }} <span class="count">{{ counts[key] }}</span></a>
+    {% endfor %}
+  </nav>
+
+  {% if rows %}
+  <table class="runs-table">
+    <thead>
+      <tr><th scope="col">Status</th><th scope="col">Work item</th><th scope="col">Stage</th><th scope="col">Cost</th><th scope="col">Started</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr id="run-{{ row.run_id }}" class="status-{{ row.status }}">
+        <td><span class="chip chip-{{ row.status }}" title="{{ row.info.help }}">{{ row.info.icon }} {{ row.info.label }}</span></td>
+        <td>
+          <div class="title">{{ row.title }}</div>
+          <div class="sub"><code>{{ row.branch or "(no branch yet)" }}</code> · <span class="muted">{{ row.run_id }}</span></div>
+        </td>
+        <td class="stage">{{ row.stage }}</td>
+        <td class="cost">
+          ${{ "%.2f" | format(row.cost_usd) }}{% if row.status == "running" and row.budget_usd is not none %}<span class="muted"> / ${{ "%.2f" | format(row.budget_usd) }}</span>{% endif %}
+        </td>
+        <td><time datetime="{{ row.started_at.isoformat() }}" title="{{ row.started_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC">{{ row.age }}</time></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% elif total %}
+  <p class="empty">No {{ filters[show][0] | lower }} runs right now. <a href="/">Show all runs</a>.</p>
+  {% else %}
+  <div class="empty">
+    <p>No runs yet in <code>{{ repo }}</code>.</p>
+    <p>Start one from a terminal, and it shows up here by itself:</p>
+    <pre><code>advpipe run --repo {{ repo_arg }} --item work-items/my-task.md</code></pre>
+  </div>
+  {% endif %}
+
+  {% if unreadable %}
+  <p class="warning">Couldn't read run.json for: {{ unreadable | join(", ") }}. Try <code>advpipe status &lt;run id&gt;</code> in a terminal.</p>
+  {% endif %}
+</section>

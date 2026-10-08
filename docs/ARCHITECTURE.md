@@ -19,6 +19,7 @@ each part, and why it's built that way. For installing and using the tool, see t
 - [Work-item files](#work-item-files)
 - [Parallel runs](#parallel-runs)
 - [Budget](#budget)
+- [The web UI](#the-web-ui)
 - [The Claude Code version](#the-claude-code-version-no-python)
 - [Testing strategy](#testing-strategy)
 - [Extending it](#extending-it)
@@ -75,7 +76,7 @@ All code is in `src/advpipe/`.
 
 | File | Responsibility | Key names |
 |---|---|---|
-| `cli.py` | Typer CLI: `run`, `resume`, `cancel`, `clean`, `status`, `report`, `gates` | `run`, `resume`, `cancel`, `clean`, `status`, `report`, `gates` |
+| `cli.py` | Typer CLI: `run`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` | `run`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` |
 | `orchestrator.py` | The state machine; resume; parallel runs | `Orchestrator`, `Orchestrator._run`, `Orchestrator._settle`, `Orchestrator.resume`, `run_many` |
 | `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `test_file_guard`, `Context` |
 | `models.py` | Pydantic data contracts and validation rules | `Finding`, `Verdict`, `AuthorResponse`, `ArbiterRuling`, `RunState`, `Stage`, `Status` |
@@ -88,6 +89,7 @@ All code is in `src/advpipe/`.
 | `control.py` | Acting on runs from outside: detached start, cancel, clean | `start_detached`, `cancel_run`, `clean_run`, `ControlError` |
 | `workitem.py` | Work-item files with optional front matter | `parse_work_item`, `load_work_item`, `WorkItem` |
 | `config.py` | `pipeline.toml` loading and validation | `Config`, `load_config` |
+| `ui/` | Optional local web UI (the `ui` extra); see [The web UI](#the-web-ui) | `create_ui_app`, `GuardMiddleware`, `load_runs` |
 | `prompts/*.md` | One system prompt per role. **Source of truth** for agent behaviour. | |
 
 ## A run, step by step
@@ -362,6 +364,9 @@ round 1.
 `diff.patch` is exactly the diff placed in that critic's (or both reviewers') prompt, so you
 can see what was judged. It's written before the critic is called.
 
+`RunLog.write_text` (used for `run.json`, `report.md` and the rest) writes a temporary file and
+renames it over the target, so a reader polling a live run never sees a half-written file.
+
 **Locking.** `RunLog.acquire_lock` writes the current process ID to `run.lock`.
 `RunLog.lock_holder` checks whether that process is still alive (`os.kill(pid, 0)`), so a lock
 left behind by a crash doesn't block anything.
@@ -468,6 +473,36 @@ the run with `budget_exceeded`. Each agent also gets `max_budget_usd` set to wha
 left, so a single runaway agent is stopped by the SDK too. The per-stage figures feed the cost
 table in `report.md` (`_cost_table` in `runlog.py`).
 
+## The web UI
+
+`advpipe ui` serves a local web UI (plan and milestones: [UI_PLAN.md](UI_PLAN.md); built so far:
+the skeleton and runs list). It lives in `src/advpipe/ui/` and needs the `ui` extra (FastAPI,
+uvicorn, Jinja2). `cli.ui` imports it lazily, so the core CLI works without it.
+
+- **Read-only over the files.** The UI reads `.advpipe/runs/*/run.json` and `config.json`; it
+  never holds state of its own. `ui/runs.py` (`load_runs`) turns run directories into rows,
+  newest first. A run whose status is `running` but whose `run.lock` holder is dead is shown as
+  *stopped*. An unreadable `run.json` is listed as such instead of breaking the page.
+- **Pages** are Jinja2 templates (`ui/templates/`, autoescaped, since run data includes agent
+  output) plus htmx and its SSE extension, vendored in `ui/static/` (`VENDORED.txt` records
+  versions, hashes and licenses). The runs list is a fragment (`/runs/list`) that re-fetches
+  itself every 3 seconds with `hx-trigger="every 3s"`.
+- **`create_ui_app(repo, items_dir, token)`** builds the FastAPI app: routes from
+  `ui/routes/`, static files, and `GuardMiddleware` (`ui/security.py`), a pure ASGI middleware
+  (so it won't buffer the streaming responses later milestones add) that, for every request:
+  1. checks the `Host` header is a loopback name (stops DNS-rebinding pages)
+  2. on `GET ?token=T` with the right token, sets an HttpOnly, SameSite=Strict cookie and
+     redirects to the same local path without the token. Otherwise the cookie is required: 401.
+     The cookie name is derived from the token, so two UIs on different ports don't clash.
+  3. for anything but GET/HEAD/OPTIONS, requires the per-server CSRF token in an
+     `X-CSRF-Token` header: 403. `base.html` sets `hx-headers` so htmx always sends it.
+  4. adds a strict Content-Security-Policy (`'self'` only, no inline script or style) and other
+     security headers. htmx is configured in a `<meta name="htmx-config">` not to inject styles
+     or evaluate code, so the policy holds.
+- **`advpipe ui`** binds `127.0.0.1` by default, refuses any non-loopback `--host` without
+  `--i-know-this-is-exposed` (and then turns the Host check off and warns), makes a new token
+  with `secrets.token_urlsafe`, prints the link, and runs uvicorn.
+
 ## The Claude Code version (no Python)
 
 The same pipeline also exists as plain Claude Code configuration, for use inside an interactive
@@ -505,6 +540,11 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   cancel, clean, run-id traversal). Detach and cancel tests start a real background process:
   `tests/advpipe_fake_child.py` is the real CLI with a `FakeAgentRunner` that can be held at a
   chosen role until a file appears. Tests point `control.child_command` at it.
+- `test_ui.py`: the web UI through FastAPI's `TestClient`, with run directories from the real
+  orchestrator and fake agents (plus hand-written `run.json` for live statuses): no token → 401,
+  missing CSRF → 403, unknown Host → 400, escaped agent text, filters, the polling fragment,
+  and the `advpipe ui` command with `uvicorn.run` replaced. Skipped if the `ui` extra isn't
+  installed.
 
 ## Extending it
 

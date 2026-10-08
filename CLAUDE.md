@@ -6,9 +6,9 @@ gates, leaving a branch ready for human review. Full brief: `BUILD_SPEC.md`.
 ## Commands
 
 ```sh
-python -m venv .venv && .venv/bin/pip install -e '.[dev]'   # or: uv sync
+python -m venv .venv && .venv/bin/pip install -e '.[dev,ui]'   # or: uv sync --all-extras
 .venv/bin/pytest
-.venv/bin/ruff check .
+.venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/mypy --strict src/
 ```
 
@@ -17,6 +17,7 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'   # or: uv sync
 - `.claude/agents/`: subagent definitions, one per role (Claude Code version)
 - `.claude/skills/adversarial-build/SKILL.md`: the pipeline procedure for use inside Claude Code
 - `src/advpipe/`: the Python orchestrator (Claude Agent SDK)
+- `src/advpipe/ui/`: the optional local web UI (`advpipe ui`, FastAPI + Jinja2 + vendored htmx)
 - `src/advpipe/prompts/`: role system prompts, **the source of truth**. Keep `.claude/agents/` in sync.
 - `tests/`: own tests. `tests/fakes.py` scripts agent responses, so no API calls are made.
 - `tests/fixtures/sample_repo/`: tiny target project for tests and dry runs. Don't modify it in

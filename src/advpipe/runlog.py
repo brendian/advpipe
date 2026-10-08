@@ -84,9 +84,13 @@ class RunLog:
         self.write_text("run.json", state.model_dump_json(indent=2))
 
     def write_text(self, rel: str, text: str) -> None:
+        """Write via a temporary file and rename, so a reader (`advpipe status`, the web UI)
+        polling a live run never sees a half-written run.json."""
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(text)
+        os.replace(tmp, path)
 
     def append_event(self, event: dict[str, object]) -> None:
         """Append one JSON line to events.jsonl. Closing the file flushes it at once."""
