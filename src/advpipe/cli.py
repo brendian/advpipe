@@ -1,4 +1,4 @@
-"""The CLI: `advpipe run | resume | cancel | clean | status | report | ui | gates`."""
+"""The CLI: `advpipe run | answer | resume | cancel | clean | status | report | ui | gates`."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from typing import Annotated
 
 import typer
 
+from advpipe import answers
+from advpipe.answers import AnswerError
 from advpipe.config import load_config
 from advpipe.control import CONSOLE_LOG, ControlError, cancel_run, clean_run, start_detached
 from advpipe.gates import run_gates
@@ -71,6 +73,12 @@ def make_progress(quiet: bool, label: str = "") -> Callable[[str], None]:
 
 def _summary(state: RunState, runlog: RunLog) -> None:
     typer.echo(f"{state.run_id}  {state.status.value}  ${state.cost_usd:.2f}  {state.branch}")
+    if answers.awaiting_answers(state, answers.max_spec_passes(runlog)):
+        n = len(answers.pending(state))
+        typer.echo(
+            f"  {n} blocking question{'s' if n != 1 else ''}. Answer them, and the run "
+            f"continues: {answers.answer_command(state.run_id)}"
+        )
     typer.echo(f"  report: {runlog.root / 'report.md'}")
 
 
@@ -244,6 +252,132 @@ def run(
         raise typer.Exit(code=1)
 
 
+def _stdin_is_tty() -> bool:
+    return sys.stdin.isatty()
+
+
+def _answers_given(answer: list[str], file: Path | None) -> dict[str, str]:
+    """Answers from --file, then --answer ID=TEXT (which wins for the same question)."""
+    given: dict[str, str] = {}
+    if file is not None:
+        try:
+            given.update(answers.parse_answers_file(file.read_text()))
+        except OSError as e:
+            raise AnswerError(f"can't read {file}: {e}") from e
+    for item in answer:
+        qid, sep, text = item.partition("=")
+        if not sep or not answers.QUESTION_ID_RE.fullmatch(qid.strip().upper()):
+            raise AnswerError(
+                f"--answer takes ID=TEXT, like --answer 'Q1=raise ValueError'; got {item!r}"
+            )
+        given[qid.strip().upper()] = text
+    return given
+
+
+def _ask(state: RunState) -> dict[str, str]:
+    """Ask each question in the terminal."""
+    given: dict[str, str] = {}
+    questions = answers.to_answer(state)
+    typer.echo(
+        f"The spec for run {state.run_id} has {len(questions)} blocking question(s). "
+        "Answer each on one line (for longer answers, use --file).",
+        err=True,
+    )
+    for q in questions:
+        typer.echo(f"\n{q.id}: {q.text}", err=True)
+        given[q.id] = typer.prompt(">", default=q.answer or None, show_default=bool(q.answer))
+    return given
+
+
+@app.command()
+def answer(
+    run_id: RunIdArg,
+    repo: RepoOpt = Path("."),
+    answer: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--answer",
+            help="An answer as ID=TEXT, e.g. --answer 'Q1=raise ValueError'. Repeat it for "
+            "each question.",
+        ),
+    ] = None,
+    file: Annotated[
+        Path | None,
+        typer.Option(
+            dir_okay=False,
+            help="Read the answers from this file: each starts with a line 'Q1: ...' (see "
+            "--template).",
+        ),
+    ] = None,
+    template: Annotated[
+        bool, typer.Option(help="Print an answers file to fill in, then exit.")
+    ] = False,
+    resume_run: Annotated[
+        bool,
+        typer.Option("--resume/--no-resume", help="Resume the run once the answers are saved."),
+    ] = True,
+    detach: Annotated[
+        bool, typer.Option(help="Resume in the background (output goes to console.log).")
+    ] = False,
+    budget: Annotated[
+        float | None, typer.Option(help="New per-task budget in USD for the resumed run.")
+    ] = None,
+    config: ConfigOpt = None,
+    keep_worktree: KeepOpt = False,
+    quiet: QuietOpt = False,
+) -> None:
+    """Answer the blocking questions a run's spec stopped on, then resume the run."""
+    runlog = RunLog.for_run(repo.resolve(), run_id)
+    if not (runlog.root / "run.json").is_file():
+        typer.echo(f"no run {run_id} in {repo}", err=True)
+        raise typer.Exit(code=2)
+    state = answers.migrate(runlog.read_state())
+    cap = answers.max_spec_passes(runlog)
+    waiting = answers.awaiting_answers(state, cap)
+    ready = answers.answers_ready(state, cap)
+    try:
+        if not (waiting or ready):
+            raise AnswerError(answers.not_waiting_message(state, cap))
+        if template:
+            typer.echo(answers.answers_template(state), nl=False)
+            return
+        if answer or file is not None:
+            given = _answers_given(answer or [], file)
+        elif ready:
+            given = {}  # answered already (e.g. with --no-resume): just resume
+        elif _stdin_is_tty():
+            given = _ask(state)
+        else:
+            lines = [f"run {run_id} is waiting on answers to:"]
+            lines += [f"  {q.id}: {q.text}" for q in answers.to_answer(state)]
+            lines.append(
+                f"answer with: advpipe answer {run_id} --answer 'Q1=...' (one per question), "
+                f"or --file FILE (advpipe answer {run_id} --template prints one to fill in)"
+            )
+            typer.echo("\n".join(lines), err=True)
+            raise typer.Exit(code=2)
+        if given:
+            saved = answers.record_answers(repo, run_id, given)
+            ids = ", ".join(q.id for q in answers.unapplied(saved))
+            typer.echo(f"answers saved for {ids}", err=True)
+    except AnswerError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2) from e
+    if not resume_run:
+        typer.echo(f"continue with: advpipe resume {run_id}", err=True)
+        return
+    resume(
+        run_id,
+        repo=repo,
+        config=config,
+        budget=budget,
+        keep_worktree=keep_worktree,
+        quiet=quiet,
+        detach=detach,
+        detached_child=False,
+    )
+
+
 @app.command()
 def resume(
     run_id: RunIdArg,
@@ -378,6 +512,14 @@ def status(
         f"open:     {len(s.open_findings)} blocking, {len(s.minor_findings)} minor",
         f"updated:  {s.updated_at:%Y-%m-%d %H:%M:%S} UTC",
     ]
+    s = answers.migrate(s)
+    if s.questions:
+        lines.append("questions:")
+        for q in s.questions:
+            lines.append(f"  {q.id}  {_short(q.text, 90)}")
+            lines.append(f"      answer: {_short(q.answer, 84)}" if q.answer else "      (waiting)")
+        if answers.awaiting_answers(s, answers.max_spec_passes(runlog)):
+            lines.append(f"answer them: {answers.answer_command(s.run_id)}")
     typer.echo("\n".join(lines))
 
 

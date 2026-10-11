@@ -10,7 +10,7 @@ You are the orchestrator. Follow the procedure exactly. You don't skip stages, y
 code or tests yourself, and you don't let an agent decide whether a stage runs.
 
 ```
-[1] spec-writer ──► task.md
+[1] spec-writer ──► task.md                max 3 passes   BLOCKING questions: ask the user, then revise
 [2] test-author ⇄ test-critic              max 2 rounds   gate: new tests exist and FAIL for the right reason
 [3] coder ⇄ code-critic                    max 3 rounds   gate: tests + types + lint green, no blocking findings
 [4] standards-reviewer ∥ security-reviewer one pass each, launched in parallel
@@ -84,10 +84,34 @@ straight to the arbiter.
 
 ## Procedure
 
-### Stage 1: Spec
+### Stage 1: Spec (max 3 passes)
 Launch `spec-writer` with the work item. It writes `task.md` at the repo root.
-If **Open questions** contains any `BLOCKING:` item, **stop**: report status `needs_human` with
-the questions. No tests or code get written.
+
+If **Open questions** contains any `BLOCKING:` item, no tests or code get written until it's
+answered:
+
+1. **Ask the user** the blocking questions, all at once, numbered `Q1`, `Q2`, ... (keep
+   numbering across passes: a later pass's new questions continue from the last number).
+2. If the user declines or doesn't answer, **stop**: report status `needs_human` with the
+   questions.
+3. With answers, launch `spec-writer` again for a revision. Give it the work item, its previous
+   `task.md`, and each question with its answer (`Q1: <question>` / `Answer: <answer>`), and
+   tell it to follow "Revising after answers" in its instructions.
+4. Then **you** rewrite the `## Answers` section at the end of `task.md` (replace it if it
+   exists), listing every answered question so far with the answer word for word, each answer
+   line indented by two spaces:
+
+   ```markdown
+   ## Answers
+   Answers from the person who started this run. They override anything above that disagrees.
+
+   - **Q1:** <question>
+     **Answer:** <answer, verbatim>
+   ```
+
+5. Check **Open questions** again. A question that repeats an answered one doesn't count: its
+   answer stands. If new `BLOCKING:` items remain, go back to step 1, but after the third spec
+   pass stop with `needs_human` and tell the user to reword the work item instead.
 
 ### Stage 2: Tests (max 2 rounds)
 For round = 1..2:
@@ -148,8 +172,8 @@ Run all gates one last time.
 
 ## Stop and summarize
 
-Whenever you stop (blocking open questions, a cap hit that the arbiter couldn't settle, or the end
-of the run), **stop and summarize for the user**:
+Whenever you stop (blocking open questions the user didn't answer, a cap hit that the arbiter
+couldn't settle, or the end of the run), **stop and summarize for the user**:
 
 - Status (`complete` / `needs_human`) and the branch name
 - Acceptance criteria and whether each is covered and met
@@ -157,3 +181,4 @@ of the run), **stop and summarize for the user**:
 - **Open blocking findings**, in full, if any
 - Minor findings (not fixed)
 - Final gate results, and whether the security scanner ran
+- Any blocking questions and the user's answers

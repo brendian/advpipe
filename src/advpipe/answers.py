@@ -66,6 +66,12 @@ def unapplied(state: RunState) -> list[OpenQuestion]:
     return [q for q in state.questions if q.answer and not q.applied]
 
 
+def to_answer(state: RunState) -> list[OpenQuestion]:
+    """The questions an answer is wanted for now: those no spec pass has used an answer for
+    (pending ones, and ones answered since the run stopped, whose answers can be replaced)."""
+    return [q for q in state.questions if not q.applied]
+
+
 def answered(state: RunState) -> list[OpenQuestion]:
     return [q for q in state.questions if q.answer]
 
@@ -112,7 +118,7 @@ def check_answers(state: RunState, answers: dict[str, str]) -> dict[str, str]:
     for yet. Raises AnswerError saying what's wrong otherwise."""
     # Questions no spec pass has used an answer for yet: pending ones, and ones answered since
     # the run stopped (answering again before resuming replaces those answers).
-    waiting = {q.id for q in state.questions if not q.applied}
+    waiting = {q.id for q in to_answer(state)}
     known = {q.id for q in state.questions}
     cleaned: dict[str, str] = {}
     for qid, text in answers.items():
@@ -165,7 +171,7 @@ def record_answers(repo: Path, run_id: str, answers: dict[str, str]) -> RunState
         state = migrate(log.read_state())
         cap = max_spec_passes(log)
         if not (awaiting_answers(state, cap) or answers_ready(state, cap)):
-            raise AnswerError(_not_waiting(state, cap))
+            raise AnswerError(not_waiting_message(state, cap))
         if not _branch_exists(repo, state.branch):
             raise AnswerError(
                 f"run {run_id} can't be resumed: its branch {state.branch} no longer exists "
@@ -194,7 +200,8 @@ def _branch_exists(repo: Path, branch: str) -> bool:
         return False
 
 
-def _not_waiting(state: RunState, cap: int) -> str:
+def not_waiting_message(state: RunState, cap: int) -> str:
+    """Why a run can't take answers now, for the person trying."""
     run = state.run_id
     if (
         state.status is Status.NEEDS_HUMAN
@@ -245,8 +252,8 @@ def answers_template(state: RunState) -> str:
     """An answers file to fill in, for `advpipe answer --template`."""
     lines = [f"# Answers for run {state.run_id}. Lines starting with # are ignored."]
     lines.append("# Write each answer after its 'Qn:'; it may go on over several lines.")
-    for q in pending(state):
-        lines += [f"# {q.id}: {_one_line(q.text)}", f"{q.id}: "]
+    for q in to_answer(state):
+        lines += [f"# {q.id}: {_one_line(q.text)}", f"{q.id}: {q.answer}".rstrip() + " "]
     return "\n".join(lines) + "\n"
 
 

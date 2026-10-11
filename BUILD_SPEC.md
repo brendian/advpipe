@@ -21,7 +21,8 @@ work item
    │
    ▼
 [1] Spec writer ──► task.md  (acceptance criteria = the contract every agent is judged against)
-   │
+   │                BLOCKING questions stop the run for a person to answer; the same run then
+   │                resumes with a spec revision (added 2026-10-11, see docs/ANSWERS_PLAN.md)
    ▼
 [2] Test author ⇄ Test critic        max 2 rounds   gate: tests exist and FAIL for the right reason
    │

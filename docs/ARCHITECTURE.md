@@ -76,7 +76,7 @@ All code is in `src/advpipe/`.
 
 | File | Responsibility | Key names |
 |---|---|---|
-| `cli.py` | Typer CLI: `run`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` | `run`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` |
+| `cli.py` | Typer CLI: `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` | `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` |
 | `answers.py` | Blocking spec questions and their answers: waiting/ready checks, recording answers, answers files, the Answers section of `task.md` | `record_answers`, `awaiting_answers`, `answers_ready`, `with_answers_section`, `parse_answers_file`, `migrate` |
 | `orchestrator.py` | The state machine; resume; parallel runs | `Orchestrator`, `Orchestrator._run`, `Orchestrator._settle`, `Orchestrator.resume`, `run_many` |
 | `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `test_file_guard`, `Context` |
@@ -165,6 +165,15 @@ Answering again before resuming replaces the answers. Then:
   `advpipe resume` runs the revision again.
 - Runs stopped by an older advpipe keep their questions only as open findings
   (`criterion: open-question`); `answers.migrate` turns those into `questions`.
+
+`advpipe answer` (`cli.answer`) collects the answers (from `--answer ID=TEXT`, `--file` parsed
+by `answers.parse_answers_file`, or prompts when stdin is a terminal), calls `record_answers`,
+then calls the `resume` command function, so foreground, `--detach`, `--budget` and the exit
+codes are exactly `advpipe resume`'s. A run whose answers are already saved (`--no-resume`)
+is just resumed. `cli._summary` and `advpipe status <run-id>` print the questions and the
+`advpipe answer` command while a run is waiting. The Claude Code skill follows the same
+procedure as instructions: it asks the user in the session, relaunches the spec writer with the
+answers, and writes the Answers section itself.
 
 ### 2. Tests (`adversarial_stage(ctx, "tests")`)
 The test-author / test-critic loop, capped at `max_rounds_tests` (default 2). Its gate is
@@ -729,6 +738,9 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   and its refusals, resume after answers (the revision prompt, the Answers section in the
   committed `task.md`, what later agents see), new questions in a revision, the spec-pass cap,
   re-asked questions, interrupted and over-budget revisions, old-format runs, answers files.
+- `test_answers_cli.py`: `advpipe answer` with `--answer`, `--file`/`--template`, prompting,
+  `--no-resume`, `--detach` (through the fake child), refusals and exit codes; what `resume`,
+  `status` and the run summary say while a run waits on answers.
 - `test_resume.py`, `test_parallel.py`, `test_cli.py`, plus unit tests for models, gates,
   stages, workspace and config/prompt sync.
 - `test_events.py` (event log matches the printed progress, ordering, flushing, resume,
