@@ -187,8 +187,30 @@ def _cost_table(state: RunState) -> list[str]:
     return rows
 
 
-def render_report(state: RunState) -> str:
+def _questions(state: RunState, waiting: bool) -> list[str]:
+    if not state.questions:
+        return []
+    lines = ["## Questions and answers"]
+    for q in state.questions:
+        lines.append(f"- **{q.id}** (spec pass {q.asked_in}): {q.text}")
+        if q.answer:
+            answer = q.answer.strip().replace("\n", "\n    ")
+            lines.append(f"  - **Answer:** {answer}")
+        else:
+            lines.append("  - (not answered" + (" yet)" if waiting else ")"))
+    return [*lines, ""]
+
+
+def render_report(state: RunState, *, waiting_on_answers: bool = False) -> str:
+    """report.md. ``waiting_on_answers``: the run stopped on blocking questions a person can
+    answer (answers.awaiting_answers), so the report says how."""
     elapsed = (state.updated_at - state.started_at).total_seconds()
+    notes = list(state.notes)
+    if waiting_on_answers:
+        notes.append(
+            "The spec has blocking questions. Answer them, and the run continues: "
+            f"advpipe answer {state.run_id}"
+        )
     lines = [
         f"# advpipe run {state.run_id}",
         "",
@@ -219,8 +241,9 @@ def render_report(state: RunState) -> str:
         "## Cost by stage",
         *_cost_table(state),
         "",
+        *_questions(state, waiting_on_answers),
         "## Notes",
-        *([f"- {n}" for n in state.notes] or ["- None"]),
+        *([f"- {n}" for n in notes] or ["- None"]),
     ]
     if state.noise_dropped:
         lines.append(f"- {state.noise_dropped} ungrounded finding(s) dropped as noise")

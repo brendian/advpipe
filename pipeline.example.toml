@@ -4,6 +4,7 @@ critic = "claude-sonnet-5-5"
 arbiter = "claude-opus-5-5"
 
 [limits]
+max_rounds_spec = 3     # spec passes: the first, plus one per round of answers
 max_rounds_tests = 2
 max_rounds_code = 3
 max_turns_per_agent = 40

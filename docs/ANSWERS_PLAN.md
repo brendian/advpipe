@@ -80,17 +80,20 @@ Read these before changing anything:
 
 ```python
 class OpenQuestion(BaseModel):
-    id: str                       # "Q1", "Q2", ... unique within the run, never reused
-    text: str                     # as the spec writer wrote it, without the BLOCKING: prefix
-    asked_in: int                 # spec pass that asked it (1 = the first spec)
-    answer: str = ""              # empty until answered
+    id: str  # "Q1", "Q2", ... unique within the run, never reused
+    text: str  # as the spec writer wrote it, without the BLOCKING: prefix
+    asked_in: int  # spec pass that asked it (1 = the first spec)
+    answer: str = ""  # empty until answered
     answered_at: datetime | None = None
-    applied: bool = False         # a spec revision has used this answer
+    applied: bool = False  # a spec revision has used this answer
+
 
 class RunState(BaseModel):
     ...
-    questions: list[OpenQuestion] = Field(default_factory=list)  # every blocking question, all passes
-    spec_passes: int = 0          # spec-writer passes completed (1 after the first spec)
+    questions: list[OpenQuestion] = Field(
+        default_factory=list
+    )  # every blocking question, all passes
+    spec_passes: int = 0  # spec-writer passes completed (1 after the first spec)
 ```
 
 Both fields have defaults, so old `run.json` files still load.

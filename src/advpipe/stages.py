@@ -32,6 +32,7 @@ from advpipe.models import (
     AuthorResponse,
     Dispute,
     Finding,
+    OpenQuestion,
     Ruling,
     RunState,
     StageResult,
@@ -211,6 +212,24 @@ def spec_prompt(work_item: str) -> str:
         f"Work item: {work_item}\n\n"
         "The target repository is your current working directory. "
         "Write task.md at the repository root."
+    )
+
+
+def spec_revision_prompt(
+    work_item: str, previous_task_md: str, questions: list[OpenQuestion]
+) -> str:
+    """The spec writer's next pass, after a person answered its blocking questions."""
+    qa = "\n\n".join(f"{q.id}: {q.text}\nAnswer: {q.answer}" for q in questions if q.answer)
+    previous = previous_task_md.strip() or "(missing)"
+    return (
+        f"Work item: {work_item}\n\n"
+        "The target repository is your current working directory.\n\n"
+        "You wrote the task.md below, and the run stopped on its BLOCKING open questions. "
+        "The person who started the run has now answered them.\n\n"
+        f"# Your previous task.md\n\n{_fence(previous, 'markdown')}\n\n"
+        f"# Questions and answers\n\n{qa}\n\n"
+        "Revise the spec: write the complete task.md again at the repository root, following "
+        'the section "Revising after answers" in your instructions.'
     )
 
 

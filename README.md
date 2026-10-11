@@ -562,6 +562,7 @@ critic  = "claude-sonnet-5-5"   # test critic, code critic, both reviewers
 arbiter = "claude-opus-5-5"
 
 [limits]
+max_rounds_spec     = 3      # spec passes: the first, plus one per round of answers
 max_rounds_tests    = 2      # test author ⇄ critic rounds
 max_rounds_code     = 3      # coder ⇄ critic rounds
 max_turns_per_agent = 40     # steps a single agent may take
