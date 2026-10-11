@@ -16,10 +16,20 @@ from pathlib import Path
 from markupsafe import Markup
 from pydantic import ValidationError
 
+from advpipe import answers
 from advpipe.config import Config
 from advpipe.control import CONSOLE_LOG
 from advpipe.gates import GateResult
-from advpipe.models import RESUMABLE, ArbiterRuling, Ruling, RunState, Stage, Status, Verdict
+from advpipe.models import (
+    RESUMABLE,
+    ArbiterRuling,
+    OpenQuestion,
+    Ruling,
+    RunState,
+    Stage,
+    Status,
+    Verdict,
+)
 from advpipe.runlog import RunLog
 from advpipe.stages import parse_model
 from advpipe.ui.actions import VALID, suggested_budget
@@ -123,6 +133,8 @@ class RoundView:
     critics: list[CriticView] = field(default_factory=list)
     test_fix: Markup | None = None  # the test author's reply in a test-defect fix pass
     expect_red: bool = False  # tests stage: the new tests are supposed to fail
+    task_md: Markup | None = None  # SPEC: task.md as this pass left it
+    asked: list[OpenQuestion] = field(default_factory=list)  # SPEC: blocking questions it asked
 
     @property
     def outcome(self) -> str:
@@ -133,6 +145,9 @@ class RoundView:
             return " · ".join(f"{c.role}: {c.verdict.verdict}" for c in self.critics if c.verdict)
         if self.gates:
             return "checks: " + ("pass" if all(g.passed for _, g in self.gates) else "fail")
+        if self.asked:
+            n = len(self.asked)
+            return f"{n} blocking question{'s' if n != 1 else ''}"
         return ""
 
 
@@ -189,6 +204,17 @@ class RunDetail:
     def actions(self) -> frozenset[str]:
         """The buttons to show: cancel, resume, clean (see ui.actions.VALID)."""
         return VALID.get(self.status, frozenset())
+
+    @property
+    def questions(self) -> list[OpenQuestion]:
+        """The blocking questions the answer form asks (with any answers already saved)."""
+        if self.status != "needs_answers":
+            return []
+        return answers.to_answer(answers.migrate(self.state))
+
+    @property
+    def max_answer_chars(self) -> int:
+        return answers.MAX_ANSWER_CHARS
 
     @property
     def suggested_budget(self) -> float:
@@ -265,6 +291,38 @@ def _critic(log: RunLog, path: Path, role: str) -> CriticView | None:
 def _reply(path: Path) -> Markup | None:
     text = read_text(path)
     return markdown(text) if text is not None else None
+
+
+def _spec_rounds(log: RunLog, state: RunState) -> list[RoundView]:
+    """One panel per spec-writer pass: the first spec, then each revision after answers."""
+    found = (
+        re.fullmatch(r"pass-(\d+)", p.name)
+        for p in (log.root / "spec").glob("pass-*")
+        if p.is_dir()
+    )
+    numbers = sorted({1, *(int(m.group(1)) for m in found if m)})
+    rounds = []
+    for n in numbers:
+        pdir = log.root / "spec" / f"pass-{n}"
+        reply = _reply(log.root / "spec" / "author.txt" if n == 1 else pdir / "author.txt")
+        task_text = read_text(pdir / "task.md")
+        asked = [q for q in state.questions if q.asked_in == n]
+        if reply is None and task_text is None and not asked:
+            continue
+        title = "Spec writer"
+        if n > 1:
+            ids = ", ".join(q.id for q in state.questions if q.asked_in < n and q.answer)
+            title = f"Revision {n - 1}" + (f": with your answers to {ids}" if ids else "")
+        rounds.append(
+            RoundView(
+                title=title,
+                author_role="spec writer",
+                author=reply,
+                task_md=markdown(task_text) if task_text is not None and n > 1 else None,
+                asked=asked,
+            )
+        )
+    return rounds
 
 
 def _round_numbers(stage_dir: Path) -> list[int]:
@@ -362,9 +420,13 @@ def _active_stage(state: RunState) -> Stage:
     return next((s for s, key in COMMIT_KEYS.items() if key not in state.commits), Stage.REVIEW)
 
 
-def _step_state(stage: Stage, state: RunState, live: bool, arbiter_used: bool) -> str:
+def _step_state(
+    stage: Stage, state: RunState, live: bool, arbiter_used: bool, can_continue: bool
+) -> str:
+    """``can_continue``: the run can still go on (resumable, or waiting on answers), so the
+    steps after where it stopped are "not yet" rather than "not reached"."""
     here = "current" if live else "stopped"
-    later = "pending" if state.status in RESUMABLE else "not_reached"
+    later = "pending" if can_continue else "not_reached"
     if stage is Stage.ARBITER:
         if state.stage is Stage.ARBITER:
             return here
@@ -372,7 +434,7 @@ def _step_state(stage: Stage, state: RunState, live: bool, arbiter_used: bool) -
             return "done"
         if state.status is Status.COMPLETE or state.stage is Stage.FINAL_GATES:
             return "not_needed"
-        return "if_needed" if state.status in RESUMABLE else "not_reached"
+        return "if_needed" if can_continue else "not_reached"
     if stage is Stage.FINAL_GATES:
         if state.status is Status.COMPLETE:
             return "done"
@@ -409,14 +471,19 @@ def build_timeline(log: RunLog, state: RunState, cfg: Config | None, live: bool)
     arbiter_used = bool(state.rulings or arbiter_rounds) or any(
         (log.root / f"arbiter-{label}.json").is_file() for label in ("tests", "code", "review")
     )
+    current = answers.migrate(state)
+    cap = (cfg or Config()).limits.max_rounds_spec
+    can_continue = (
+        state.status in RESUMABLE
+        or answers.awaiting_answers(current, cap)
+        or answers.answers_ready(current, cap)
+    )
     steps = []
     for stage in TIMELINE:
         rounds: list[RoundView] = []
         task_md = None
         if stage is Stage.SPEC:
-            reply = _reply(log.root / "spec" / "author.txt")
-            if reply is not None:
-                rounds = [RoundView(title="Spec writer", author_role="spec writer", author=reply)]
+            rounds = _spec_rounds(log, answers.migrate(state))
             task_text = read_text(log.root / "task.md")
             task_md = markdown(task_text) if task_text is not None else None
         elif stage is Stage.TESTS:
@@ -434,7 +501,7 @@ def build_timeline(log: RunLog, state: RunState, cfg: Config | None, live: bool)
             StepView(
                 stage=stage,
                 label=STAGE_LABELS.get(stage, stage.value),
-                state=_step_state(stage, state, live, arbiter_used),
+                state=_step_state(stage, state, live, arbiter_used, can_continue),
                 summary=_summary(stage, state, cfg, rounds),
                 rounds=rounds,
                 task_md=task_md,
@@ -487,6 +554,14 @@ def next_steps(state: RunState, status: str, repo: Path, budget: float | None) -
             steps.append(
                 NextStep("Remove the working copy it kept", f"{git} worktree remove {q(worktree)}")
             )
+    elif status == "needs_answers":
+        steps.append(
+            NextStep(
+                "Answer the spec's questions in a terminal (or in the form above)",
+                f"advpipe answer {run_id} --repo {r}",
+            )
+        )
+        steps.append(clean)
     elif status == "needs_human":
         if read_change:
             steps.append(NextStep("See what it did so far", read_change.command))

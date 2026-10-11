@@ -38,6 +38,7 @@ VALID: dict[str, frozenset[str]] = {
     "error": frozenset({"resume", "clean"}),
     "budget_exceeded": frozenset({"resume", "clean"}),
     "needs_human": frozenset({"clean"}),
+    "needs_answers": frozenset({"answer", "clean"}),
     "complete": frozenset(),
 }
 
@@ -98,6 +99,13 @@ def resume_args(repo: Path, run_id: str, budget: float | None) -> list[str]:
     if budget is not None:
         args += ["--budget", f"{budget:.2f}"]
     return args
+
+
+def answer_args(repo: Path, run_id: str, answers: dict[str, str]) -> list[str]:
+    """`advpipe answer ... --detach`. Each answer is one argument in the ``--answer=ID=TEXT``
+    form, so an answer starting with "-" can't be read as an option."""
+    args = ["answer", run_id, "--repo", str(repo), "--detach"]
+    return args + [f"--answer={qid}={text}" for qid, text in answers.items()]
 
 
 def clean_args(repo: Path, run_id: str, *, force: bool, logs: bool) -> list[str]:

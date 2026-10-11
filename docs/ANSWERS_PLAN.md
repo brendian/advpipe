@@ -23,6 +23,14 @@ answers saved; resuming at SPEC
 The same works from the web UI (an answer form on the run page) and inside Claude Code (the
 skill asks you in the session).
 
+> **Status (2026-10-11): implemented**, A0 to A2, with the proposed answers to §8. Where the
+> code differs from the text below: `with_answers_section` lives in `answers.py` (not
+> `stages.py`), next to the other helpers; `record_answers` reads the spec-pass cap from the
+> run's `config.json` instead of taking `limits`; and the UI shows any run whose `run.lock`
+> has a live holder as *running*, so the page goes live right after *Save answers and
+> continue* (before the background process has written `running` to `run.json`). The
+> optional "copy answers into the work item" button wasn't built.
+
 This plan is for **future Claude Code sessions**. Each milestone below (A0 to A2) is sized for
 one session and ends with tests. See [How to use this plan](#how-to-use-this-plan-in-a-session).
 Read `CLAUDE.md` and `docs/ARCHITECTURE.md` first. Paths and names below are from the code as

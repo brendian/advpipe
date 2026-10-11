@@ -50,7 +50,28 @@
   </section>
   {%- endif %}
 
-  {%- if state.open_findings and not d.live %}
+  {%- if d.questions %}
+  {#- Blocking spec questions: answering them resumes this same run (`advpipe answer --detach`).
+      Refusals come back into #answer-result (409 or 422), and the typed answers stay put. #}
+  <section class="callout answer-callout">
+    <h2>Answer the spec's questions</h2>
+    <p>The spec writer stopped on {{ "this question" if d.questions | length == 1 else "these questions" }}: it shouldn't guess the answer.
+      Answer {{ "it" if d.questions | length == 1 else "every one" }}, and the run carries on: the spec writer revises <code>task.md</code> with your
+      answers (one more spec pass, so a little more cost), then tests, code and review run as usual.
+      Your answers go into <code>task.md</code> word for word, for every later agent to read.</p>
+    <form class="answer-form" hx-post="/runs/{{ d.run_id }}/answer" hx-target="#answer-result">
+      {%- for q in d.questions %}
+      <div class="field">
+        <label for="answer-{{ q.id }}"><strong>{{ q.id }}</strong> {{ q.text }}</label>
+        <textarea id="answer-{{ q.id }}" class="short" name="answer_{{ q.id }}" rows="3" required maxlength="{{ d.max_answer_chars }}">{{ q.answer }}</textarea>
+      </div>
+      {%- endfor %}
+      <button type="submit" class="button primary">Save answers and continue</button>
+      <small class="muted">It has spent ${{ "%.2f" | format(state.cost_usd) }}{% if d.budget_usd %} of its ${{ "%.2f" | format(d.budget_usd) }} budget{% endif %}. It continues in the background.</small>
+      <div id="answer-result" aria-live="polite"></div>
+    </form>
+  </section>
+  {%- elif state.open_findings and not d.live %}
   <section class="callout">
     <h2>What's left open</h2>
     {%- for f in state.open_findings %}

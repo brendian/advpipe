@@ -283,8 +283,9 @@ The **Runs** page lists every run in the repo, newest first, with its status, st
 cost (against the budget while it's running) and age.
 It refreshes itself every few seconds, so runs started from a terminal (or with `--detach`) show
 up and move along by themselves. Hover over a status to see what it means. Filters show all
-runs, running ones, ones that need you (`needs you`, `stopped`, `over budget`, `error`), or
-complete ones.
+runs, running ones, ones that need you (`needs you`, `needs answers`, `stopped`, `over
+budget`, `error`), or complete ones. `needs answers` is a run whose spec stopped on blocking
+questions: answer them on its page.
 
 ### A run's page
 
@@ -294,6 +295,11 @@ Click a run to open its page:
 
 - **Header:** status (hover for what it means), stage, cost against the budget, time, and the
   branch with a copy button. If the run needs you, *What's left open* lists the findings.
+- **Answer the spec's questions:** for a run that *needs answers*, a form with a box per
+  blocking question. *Save answers and continue* runs `advpipe answer ... --detach`: the same
+  run carries on in the background, starting with the spec writer revising `task.md` with your
+  answers (see [`advpipe answer`](#advpipe-answer)). The SPEC step then shows each spec pass
+  with the questions it asked and your answers.
 - **Actions:** buttons for what can be done with the run as it is now (see *Starting and
   managing runs* below): *Cancel run* while it's running; *Resume* for a stopped, failed or
   over-budget run; *Clean up…* for any run that isn't running or complete.
@@ -308,7 +314,7 @@ Click a run to open its page:
   critic's verdict with its findings. SPEC also shows `task.md`; ARBITER shows its rulings.
 - **Report:** `report.md`, once the run has finished.
 
-![A run that needs you: the blocking question from the spec is listed under "What's left open"](docs/screenshots/run-needs-you.png)
+![A run that needs answers: the spec's blocking question, with a box to answer it and continue the run](docs/screenshots/run-needs-you.png)
 
 ### Spec & context
 

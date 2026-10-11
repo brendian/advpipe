@@ -554,7 +554,10 @@ with headless Chromium).
   never holds state of its own, and never writes run files itself: actions go through the CLI
   (see *Actions* below). `ui/runs.py` (`load_runs`) turns run directories into rows,
   newest first. A run whose status is `running` but whose `run.lock` holder is dead is shown as
-  *stopped*. An unreadable `run.json` is listed as such instead of breaking the page.
+  *stopped*, and a `needs_human` run waiting on answers to blocking spec questions
+  (`answers.awaiting_answers`, or answers saved but not resumed yet) as *needs answers*. Both
+  are display-only (`display_status`); `run.json` keeps the real status. An unreadable
+  `run.json` is listed as such instead of breaking the page.
 - **Pages** are Jinja2 templates (`ui/templates/`, autoescaped, since run data includes agent
   output) plus htmx and its SSE extension, vendored in `ui/static/` (`VENDORED.txt` records
   versions, hashes and licenses). The runs list is a fragment (`/runs/list`) that re-fetches
@@ -628,10 +631,22 @@ with headless Chromium).
   `--detach`, so they're ordinary background processes that outlive the UI.
   - **Which actions, when.** `VALID` maps each displayed status to its actions: *running*:
     cancel; *stopped*, *error*, *over budget*: resume and clean; *needs you*: clean;
-    *complete*: none. Buttons are drawn from it (`RunDetail.actions`), and every action route
+    *needs answers*: answer and clean; *complete*: none. Buttons are drawn from it (`RunDetail.actions`), and every action route
     checks it again before running anything: an action that's no longer valid gets 409 with a
     "reload" message; one the CLI refuses gets 422 with the CLI's message (escaped). `base.html`
     lets htmx swap both into the page's `#action-result`.
+  - **Answer** (`POST /runs/<id>/answer`). For *needs answers*, the run page's header shows a
+    form with a textarea per question (`RunDetail.questions`: those no spec pass has used an
+    answer for, prefilled with answers already saved). The route reads only `answer_Q<n>`
+    fields, checks them with `answers.check_answers` (so a refused form never starts a
+    process; 422 with the reason, and the typed answers stay in the page), then runs
+    `advpipe answer <id> --repo <repo> --detach --answer=Q1=<text> ...`
+    (`actions.answer_args`; the `--answer=` form keeps an answer that starts with `-` from
+    looking like an option). On success it redirects to the run page with an "answered"
+    notice; the run goes live there. The SPEC step of the timeline has a panel per spec pass
+    (`_spec_rounds`: the first spec, then "Revision N: with your answers to ..."), each with
+    the blocking questions it asked and their answers; the Spec & context tab highlights the
+    `## Answers` section of `task.md`.
   - **New run** (`/runs/new`). `plan_run` works out what `advpipe run` would do from the
     form (a work item via `item_path` and `load_work_item`, or a typed task; optional branch
     name and config overrides): the effective config (form, then front matter, then
@@ -753,6 +768,11 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   missing CSRF → 403, unknown Host → 400, escaped agent text, filters, the polling fragment,
   and the `advpipe ui` command with `uvicorn.run` replaced. Skipped if the `ui` extra isn't
   installed.
+- `test_ui_answers.py`: answering from the web UI: *needs answers* in the list and on the page,
+  the form (one field per question, prefilled when answers are saved), the exact
+  `advpipe answer` argument list, refusals before any process (missing, empty, unknown,
+  too long), token/CSRF, escaping of questions and answers on every page, the SPEC passes in
+  the timeline, and an end-to-end answer through the fake child.
 - `test_ui_detail.py`: the run detail page for runs from the real orchestrator (complete,
   blocked at the spec, stopped in the arbiter's final pass) and for every status; escaping of
   agent text in every file the page reads; quoting in next-step commands; 404s for unknown and

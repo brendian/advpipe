@@ -64,6 +64,8 @@ NOTICES = {
     "cancelled": "Asked it to stop. It stops at its next safe point (after the agent call or "
     "check it's in), and can be resumed later.",
     "cleaned": "Cleaned up: its working copy and branch are removed. The log stays here.",
+    "answered": "Answers saved. The run carries on in the background: first the spec writer "
+    "revises task.md with your answers.",
 }
 
 

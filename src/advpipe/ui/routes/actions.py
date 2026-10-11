@@ -1,4 +1,4 @@
-"""Starting runs (the New run dialog), and cancel, resume and clean up on a run.
+"""Starting runs (the New run dialog), and cancel, resume, answer and clean up on a run.
 
 Every action is a POST from htmx, so it carries the CSRF header (see ui/security.py), and runs
 the advpipe CLI through ``ui.actions.call_advpipe``. An action that isn't valid for the run's
@@ -9,12 +9,14 @@ message, status 422. base.html lets htmx swap both into the page. Success answer
 
 from __future__ import annotations
 
+import re
 from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, Response
 
+from advpipe import answers
 from advpipe.models import RunState
 from advpipe.runlog import RunLog, check_run_id
 from advpipe.ui import actions, items
@@ -65,6 +67,7 @@ NOT_NOW = {
     "cancel": "There's nothing to cancel: no advpipe process is working on this run.",
     "resume": "This run can't be resumed: it's {status}.",
     "clean": "This run can't be cleaned up: it's {status}.",
+    "answer": "This run isn't waiting on answers: it's {status}.",
 }
 
 
@@ -207,6 +210,40 @@ def resume_run(request: Request, run_id: str, budget: Short = "") -> Response:
     if not result.ok:
         return _result(request, f"advpipe couldn't resume it: {result.message}", 422)
     return _redirect(f"/runs/{run_id}", notice="resumed")
+
+
+# --------------------------------------------------------------------------- answer
+
+ANSWER_FIELD = re.compile(r"answer_(Q[1-9][0-9]{0,3})")
+
+
+@router.post("/runs/{run_id}/answer")
+async def answer_run(request: Request, run_id: str) -> Response:
+    """Answer the spec's blocking questions and resume the run in the background
+    (`advpipe answer --detach`). The answers are checked here first, so a refused form never
+    starts a process; the CLI checks again."""
+    checked = _check(request, run_id, "answer")
+    if isinstance(checked, HTMLResponse):
+        return checked
+    state, _ = checked
+    # Field names are answer_Q1, answer_Q2, ...; anything else in the form is ignored.
+    async with request.form(
+        max_fields=50, max_part_size=answers.MAX_TOTAL_ANSWER_CHARS * 4
+    ) as form:
+        given = {
+            m.group(1): value
+            for key, value in form.multi_items()
+            if (m := ANSWER_FIELD.fullmatch(key)) and isinstance(value, str)
+        }
+    try:
+        answers.check_answers(answers.migrate(state), given)
+    except answers.AnswerError as e:
+        return _result(request, f"Not saved: {e}.", 422)
+    ui = ui_config(request)
+    result = actions.call_advpipe(ui.repo, actions.answer_args(ui.repo, run_id, given))
+    if not result.ok:
+        return _result(request, f"advpipe didn't take the answers: {result.message}", 422)
+    return _redirect(f"/runs/{run_id}", notice="answered")
 
 
 # --------------------------------------------------------------------------- clean up

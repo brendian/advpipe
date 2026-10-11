@@ -95,6 +95,25 @@
       <div class="prose">{{ r.author | safe }}</div>
     </details>
     {%- endif %}
+    {%- if r.task_md is not none %}
+    <details class="reply" id="{{ panel_id }}-task">
+      <summary><code>task.md</code> as this pass left it</summary>
+      <div class="prose">{{ r.task_md | safe }}</div>
+    </details>
+    {%- endif %}
+    {%- if r.asked %}
+    <div class="asked">
+      <h4>Blocking questions it asked</h4>
+      <ul>
+        {%- for q in r.asked %}
+        <li><strong>{{ q.id }}</strong> {{ q.text }}
+          {%- if q.answer %}
+          <div class="answer"><span class="muted">Your answer:</span> <span class="answer-text">{{ q.answer }}</span></div>
+          {%- else %} <span class="muted">(not answered)</span>{% endif %}</li>
+        {%- endfor %}
+      </ul>
+    </div>
+    {%- endif %}
     {%- if r.test_fix is not none %}
     <details class="reply" id="{{ panel_id }}-testfix">
       <summary>Test fix pass: what the test author replied</summary>
