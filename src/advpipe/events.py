@@ -23,6 +23,8 @@ EventKind = Literal[
     "ruling",
     "status",
     "error",
+    "questions",
+    "answers",
 ]
 
 

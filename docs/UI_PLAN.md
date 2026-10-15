@@ -236,6 +236,10 @@ Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .
 Optional later: browser tests with Playwright (via the `run` skill), a diff view with syntax
 highlighting, and editing a run's `task.md` before tests start (a "pause after spec" option).
 
+**Later: answering blocking questions** *(done; see [ANSWERS_PLAN.md](ANSWERS_PLAN.md))*. A
+display-only *needs answers* status, an answer form on the run page (`POST /runs/<id>/answer`,
+running `advpipe answer --detach`), and a panel per spec pass in the SPEC step.
+
 ## 7. Testing approach
 
 - **No API calls, as everywhere in advpipe.** UI tests create real run directories by running

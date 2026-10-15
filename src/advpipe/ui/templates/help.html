@@ -29,7 +29,10 @@
     <li><strong>SPEC.</strong> The spec writer turns your work item into <code>task.md</code>: what
       to build, as numbered <em>acceptance criteria</em> (AC1, AC2, ...), plus anything unclear as
       <em>open questions</em>. A question marked <code>BLOCKING</code> stops the run here, for you to
-      answer.</li>
+      answer: the run shows as <em>needs answers</em>, with a form on its page. Then the same run
+      carries on: the spec writer revises <code>task.md</code> with your answers, and advpipe adds
+      them, word for word, in an <em>Answers</em> section every later agent reads. At most
+      {{ limits.max_rounds_spec }} spec passes by default.</li>
     <li><strong>TESTS.</strong> The test author writes tests for the criteria, before any code
       exists, and the tests must fail (there's nothing to pass yet). The test critic looks for
       gaps. Up to {{ limits.max_rounds_tests }} rounds by default.</li>

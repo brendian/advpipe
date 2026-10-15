@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from advpipe import answers
 from advpipe.config import Config
 from advpipe.models import RunState, Stage, Status
 from advpipe.runlog import RUN_ID_RE, RunLog, runs_dir
@@ -18,7 +19,9 @@ class StatusInfo:
     help: str
 
 
-# Keyed by RunState.status, plus "stopped": status "running" with no live process.
+# Keyed by RunState.status, plus two display-only statuses: "stopped" (status "running" with
+# no live process) and "needs_answers" (needs_human, waiting on answers to blocking spec
+# questions: answers.awaiting_answers, or answers saved but not resumed yet).
 STATUSES: dict[str, StatusInfo] = {
     "running": StatusInfo("running", "●", "An advpipe process is working on this run right now."),
     "stopped": StatusInfo(
@@ -37,6 +40,12 @@ STATUSES: dict[str, StatusInfo] = {
         "Stopped for a person to decide: open findings, failing checks, or a blocking question "
         "in task.md. The report says which.",
     ),
+    "needs_answers": StatusInfo(
+        "needs answers",
+        "?",
+        "The spec has questions only you can answer. Answer them on the run's page (or with "
+        "advpipe answer <run id>) and the same run carries on.",
+    ),
     "budget_exceeded": StatusInfo(
         "over budget",
         "$",
@@ -54,7 +63,7 @@ FILTERS: dict[str, tuple[str, frozenset[str]]] = {
     "running": ("Running", frozenset({"running"})),
     "needs_you": (
         "Needs you",
-        frozenset({"stopped", "needs_human", "budget_exceeded", "error"}),
+        frozenset({"stopped", "needs_human", "needs_answers", "budget_exceeded", "error"}),
     ),
     "complete": ("Complete", frozenset({"complete"})),
 }
@@ -136,8 +145,16 @@ def _config(log: RunLog) -> Config | None:
 
 
 def display_status(state: RunState, log: RunLog) -> str:
+    # A live process holding run.lock is driving the run, whatever run.json says yet: e.g. a
+    # background `resume` or `answer --detach` that hasn't written "running" so far.
+    if log.lock_holder() is not None:
+        return "running"
     if state.status is Status.RUNNING:
-        return "running" if log.lock_holder() is not None else "stopped"
+        return "stopped"
+    if state.status is Status.NEEDS_HUMAN:
+        current, cap = answers.migrate(state), answers.max_spec_passes(log)
+        if answers.awaiting_answers(current, cap) or answers.answers_ready(current, cap):
+            return "needs_answers"
     return state.status.value
 
 

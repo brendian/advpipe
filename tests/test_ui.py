@@ -233,7 +233,7 @@ async def test_runs_list_from_real_runs(config: Config, target_repo: Path) -> No
     assert "ready for you to review" in complete  # the status tooltip
 
     needs = row(page, "r-needs")
-    assert "needs you" in needs and "SPEC" in needs
+    assert "needs answers" in needs and "SPEC" in needs  # a blocking spec question
     assert "clamp with questions" in needs and "##" not in needs
     # Newest first.
     assert page.index('id="run-r-needs"') < page.index('id="run-r-complete"')

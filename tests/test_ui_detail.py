@@ -115,14 +115,15 @@ async def test_needs_human_spec_question(config: Config, target_repo: Path) -> N
     await orchestrate(config, target_repo, "r-q", scripts)
     page = logged_in(target_repo).get("/runs/r-q").text
 
-    assert "⚠ needs you" in page
+    # Blocked on a spec question: answerable (tests/test_ui_answers.py covers the form).
+    assert "? needs answers" in page
     steps = steps_of(page)
     assert steps["SPEC"] == "stopped here"
-    assert steps["TESTS"] == steps["CODE"] == steps["FINAL CHECKS"] == "not reached"
-    assert "What's left open" in page and "should lo &gt; hi swap or raise?" in page
+    assert steps["TESTS"] == steps["CODE"] == steps["FINAL CHECKS"] == "not yet"
+    assert "Answer the spec&#39;s questions" in page and "should lo &gt; hi swap or raise?" in page
     assert '<details class="step-panel step-stopped" id="step-SPEC" open>' in page
+    assert f"advpipe answer r-q --repo {target_repo}" in page
     assert f"advpipe clean r-q --repo {target_repo}" in page
-    assert "See what it did so far" in page
     assert f"git -C {target_repo} merge" not in page
 
 

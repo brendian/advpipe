@@ -43,6 +43,20 @@ into `task.md`, the contract every later agent is judged against.
   reasonable default should state the default you chose, without the prefix.
 - If there are no open questions, write `- None`.
 
+## Revising after answers
+
+Sometimes the run stopped on your `BLOCKING:` questions and a person has answered them. You then
+get your previous `task.md` and the questions with their answers. Write the complete `task.md`
+again (the old file is gone), with the same structure:
+
+- Turn each answer into acceptance criteria, constraints or scope, wherever it belongs. Keep the
+  numbers of criteria that haven't changed, and number new ones after the existing ones.
+- Remove the answered questions from **Open questions**. Keep your non-blocking questions with
+  their defaults.
+- Don't ask an answered question again. Add a new `BLOCKING:` question only if an answer raises
+  a genuinely new blocker.
+- Don't write an `## Answers` section: the pipeline appends the answers, word for word, itself.
+
 ## You must not
 
 - Write code or tests.

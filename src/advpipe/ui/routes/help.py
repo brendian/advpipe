@@ -21,8 +21,12 @@ STATUS_NEXT = {
     "stopped": "Resume it from its page, or clean it up if you don't want it any more.",
     "complete": "Read the change, then merge the branch yourself. The run page has the commands.",
     "needs_human": (
-        'Open the run and read "What\'s left open". Answer a blocking question in the work item '
-        "and start a new run, or finish the branch by hand, or clean it up."
+        'Open the run and read "What\'s left open". Finish the branch by hand, or clean it up '
+        "and start a new run with a clearer work item."
+    ),
+    "needs_answers": (
+        "Open the run and answer the spec's questions in the form there. The same run carries "
+        "on: the spec writer revises task.md with your answers, then the usual steps run."
     ),
     "budget_exceeded": "Resume it with a bigger budget, or clean it up.",
     "error": "Read the report for the error, then resume it, or clean it up.",

@@ -81,7 +81,7 @@ h1 { font-size: 1.4rem; margin: 0.5rem 0 1rem; }
 }
 .chip-running { color: var(--running); }
 .chip-complete { color: var(--complete); }
-.chip-needs_human, .chip-budget_exceeded { color: var(--attention); }
+.chip-needs_human, .chip-needs_answers, .chip-budget_exceeded { color: var(--attention); }
 .chip-error { color: var(--danger); }
 .chip-stopped { color: var(--stopped); }
 
@@ -266,7 +266,8 @@ pre.diff { max-height: 40rem; line-height: 1.35; }
 }
 .doc { border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.9rem; }
 .task-counts { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-.task-md h2.task-ac, .task-md h2.task-oq { color: var(--accent); }
+.task-md h2.task-ac, .task-md h2.task-oq, .task-md h2.task-ans { color: var(--accent); }
+.task-md li.ans { border-left: 3px solid var(--complete); padding-left: 0.4rem; margin: 0.2rem 0; }
 .task-md li.ac { border-left: 3px solid var(--complete); padding-left: 0.4rem; margin: 0.2rem 0; }
 .task-md li.oq { border-left: 3px solid var(--attention); padding-left: 0.4rem; margin: 0.2rem 0; }
 .task-md li.oq.blocking { border-left-color: var(--danger); color: var(--danger); font-weight: 600; }
@@ -438,3 +439,15 @@ main:focus { outline: none; }
   .items-table .actions a { display: inline-block; margin: 0 0 0.3rem 0.6rem; }
 }
 
+
+/* ---------------------------------------------------------------- answering spec questions */
+
+.answer-form { display: flex; flex-direction: column; gap: 0.75rem; align-items: flex-start; }
+.answer-form .field { width: 100%; }
+.answer-form label { display: block; margin-bottom: 0.25rem; }
+/* Answers are prose: the normal font, and short boxes (.field textarea.short) that grow. */
+.answer-form .field textarea { font-family: inherit; font-size: 1rem; }
+.answer-form #answer-result { width: 100%; }
+.asked ul { margin: 0.25rem 0; padding-left: 1.25rem; }
+.asked li { margin-bottom: 0.4rem; }
+.asked .answer-text { white-space: pre-wrap; }

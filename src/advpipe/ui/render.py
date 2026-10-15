@@ -39,8 +39,9 @@ def markdown(text: str) -> Markup:
 
 # --------------------------------------------------------------------------- task.md
 
-# The two task.md sections the page highlights (see prompts/spec-writer.md for the layout).
-_TASK_SECTIONS = {"acceptance criteria": "ac", "open questions": "oq"}
+# The task.md sections the page highlights (see prompts/spec-writer.md for the layout; the
+# Answers section is written by the orchestrator, see answers.with_answers_section).
+_TASK_SECTIONS = {"acceptance criteria": "ac", "open questions": "oq", "answers": "ans"}
 # Same prefix forms as stages.blocking_open_questions: "BLOCKING:", "**BLOCKING:**", ...
 _BLOCKING = re.compile(r"(?:\*\*)?BLOCKING(?::\*\*|\*\*:|:)", re.IGNORECASE)
 
@@ -65,7 +66,7 @@ def _mark_task_sections(state: StateCore) -> None:
     """Classes on the acceptance-criteria and open-question headings and items, and counts
     of them in ``env["task"]``."""
     counts: dict[str, Any] = state.env.setdefault("task", {})
-    counts.update(ac=0, oq=0, blocking=0, found=set())
+    counts.update(ac=0, oq=0, ans=0, blocking=0, found=set())
     section: str | None = None
     depth = 0
     tokens = state.tokens

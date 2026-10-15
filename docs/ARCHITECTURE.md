@@ -76,7 +76,8 @@ All code is in `src/advpipe/`.
 
 | File | Responsibility | Key names |
 |---|---|---|
-| `cli.py` | Typer CLI: `run`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` | `run`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` |
+| `cli.py` | Typer CLI: `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` | `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` |
+| `answers.py` | Blocking spec questions and their answers: waiting/ready checks, recording answers, answers files, the Answers section of `task.md` | `record_answers`, `awaiting_answers`, `answers_ready`, `with_answers_section`, `parse_answers_file`, `migrate` |
 | `orchestrator.py` | The state machine; resume; parallel runs | `Orchestrator`, `Orchestrator._run`, `Orchestrator._settle`, `Orchestrator.resume`, `run_many` |
 | `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `test_file_guard`, `Context` |
 | `models.py` | Pydantic data contracts and validation rules | `Finding`, `Verdict`, `AuthorResponse`, `ArbiterRuling`, `RunState`, `Stage`, `Status` |
@@ -129,8 +130,50 @@ A resumed run calls `Workspace.reopen` instead (see [resume](#persistence-resume
 - `blocking_open_questions` scans the `## Open questions` section for items starting with
   `BLOCKING:`. If there are any, the run stops with `needs_human` **before any code is
   written**. The idea is that a human answers a question once instead of agents guessing and
-  arguing.
+  arguing. Each question is recorded in `state.questions` (`OpenQuestion`: id `Q1`, `Q2`, ...,
+  numbered across the whole run; its text; the spec pass that asked it) and as an open
+  finding, and a `questions` event says how to answer.
 - Commits `task.md`. That commit becomes `state.commits["spec"]`.
+
+**Answering and resuming** (`answers.py`; plan: [ANSWERS_PLAN.md](ANSWERS_PLAN.md)). A person
+answers with `advpipe answer` (or the web UI). `answers.record_answers` checks that the run
+is waiting on answers (`awaiting_answers`: `needs_human` at SPEC, no spec commit, questions
+pending, spec passes left under `limits.max_rounds_spec`), that every question no pass has
+used an answer for yet is answered (all or nothing; empty and over-long answers refused), that
+no live process holds the lock and that the branch still exists. It saves the answers in
+`run.json` (under the lock) and appends an `answers` event; the status stays `needs_human`.
+Answering again before resuming replaces the answers. Then:
+
+- `check_resumable` accepts a `needs_human` run whose answers are all in
+  (`answers_ready`), and for one still waiting raises `NotResumable` naming the questions and
+  `advpipe answer <run-id>`. `RESUMABLE` itself is unchanged.
+- `_spec` runs a **revision** whenever some answers haven't been used yet
+  (`answers.unapplied`): `spec_revision_prompt` gives the spec writer the work item, its
+  previous `task.md` and every question with its answer. The previous `task.md` comes from the
+  run directory, because `Workspace.reopen` has wiped the worktree's uncommitted copy. After
+  the pass (`state.spec_passes` += 1, its answers marked `applied`) the orchestrator rewrites
+  the `## Answers` section of `task.md` itself (`answers.with_answers_section`): every answered
+  question with the answer verbatim, indented so no line of an answer can start a heading or a
+  list item, so `blocking_open_questions` never reads an answer as a question. Later agents see
+  the answers as part of `task.md`, never the spec writer's reply.
+- A revision may ask new blocking questions: they get the next ids and the run stops again.
+  One that repeats an answered question (same text, ignoring case and spacing) isn't asked
+  again; a note says its answer stands. When the pass that still has blocking questions is
+  pass number `max_rounds_spec` (default 3), the run stops for good: not answerable, with a
+  note to reword the work item and start a new run.
+- An interrupted, failed or over-budget revision leaves its answers unapplied, so a plain
+  `advpipe resume` runs the revision again.
+- Runs stopped by an older advpipe keep their questions only as open findings
+  (`criterion: open-question`); `answers.migrate` turns those into `questions`.
+
+`advpipe answer` (`cli.answer`) collects the answers (from `--answer ID=TEXT`, `--file` parsed
+by `answers.parse_answers_file`, or prompts when stdin is a terminal), calls `record_answers`,
+then calls the `resume` command function, so foreground, `--detach`, `--budget` and the exit
+codes are exactly `advpipe resume`'s. A run whose answers are already saved (`--no-resume`)
+is just resumed. `cli._summary` and `advpipe status <run-id>` print the questions and the
+`advpipe answer` command while a run is waiting. The Claude Code skill follows the same
+procedure as instructions: it asks the user in the session, relaunches the spec writer with the
+answers, and writes the Answers section itself.
 
 ### 2. Tests (`adversarial_stage(ctx, "tests")`)
 The test-author / test-critic loop, capped at `max_rounds_tests` (default 2). Its gate is
@@ -333,8 +376,10 @@ run.json        RunState, rewritten at every transition and after every agent ca
 events.jsonl    every progress event, one JSON object per line (see below)
 console.log     stdout and stderr of a run started with --detach
 config.json     the config this run runs under (rewritten on resume, e.g. after --budget)
-task.md         copy of the spec
-spec/author.txt
+task.md         copy of the spec (the latest pass, with the Answers section)
+spec/author.txt the spec writer's reply (first pass)
+spec/pass-N/{task.md, author.txt, answers.json}   each spec pass's task.md; for passes N ≥ 2
+                (revisions after answers) also the reply and the questions and answers given
 stage-tests/round-N/{author.txt, diff.patch, critic.json, gates.json}
 stage-code/round-N/{author.txt, diff.patch, critic.json, gates.json}
 review/{diff.patch, standards.json, security.json, scanner.json}
@@ -349,7 +394,9 @@ run.lock        present only while a process is driving the run
 
 1. Loads `run.json` (`check_resumable`). Refuses (`NotResumable`) if the run is `complete` or
    `needs_human`, or if another live process holds the lock. Resumable statuses are `running`
-   (interrupted), `error` and `budget_exceeded` (`RESUMABLE` in `models.py`).
+   (interrupted), `error` and `budget_exceeded` (`RESUMABLE` in `models.py`), plus a
+   `needs_human` run whose blocking spec questions have all been answered (see "Answering and
+   resuming" above).
 2. Uses the run's saved `config.json` unless you pass one. `--budget` overrides the limit.
    `_open_workspace` writes the config back to `config.json`, so a raised budget sticks: the
    UI shows it, and a later resume uses it.
@@ -402,7 +449,7 @@ Extra fields by kind:
 |---|---|---|
 | `run_start` | new run (branch, worktree) or resume | `branch` or `worktree` (new runs) |
 | `stage` | `== STAGE`, and a stage passing or going to the arbiter | `passed` (for the latter) |
-| `round` | start of an author/critic round | `cap` |
+| `round` | start of an author/critic round, or of a spec revision pass | `cap` |
 | `agent_start` / `agent_done` | around every agent call | `role`; `agent_done` adds `cost_usd`, `total_usd`, `is_error` |
 | `gates` | check results, scanner result, each blocking gate failure | `gates`: `{name: "pass" \| "fail" \| "skipped"}` (not on the failure lines) |
 | `verdict` | a critic or reviewer verdict | `role`, `verdict`, `blocking`, `minor` |
@@ -411,6 +458,8 @@ Extra fields by kind:
 | `ruling` | each arbiter ruling | `finding_id`, `decision` |
 | `status` | budget exceeded, interrupted, and the final event of every process | `status`; the final one adds `final: true` and `total_usd` |
 | `error` | an unexpected exception ended the run | |
+| `questions` | the spec stopped on blocking questions | `ids`; `answerable` (false once the spec-pass cap is reached) |
+| `answers` | answers were recorded (`advpipe answer`, written by that process) | `ids` |
 
 The final `status` event is written with `echo=False`: it isn't printed, because the CLI prints
 its own summary. Resumed runs append to the same file, so a run's whole history is one file. A
@@ -505,7 +554,10 @@ with headless Chromium).
   never holds state of its own, and never writes run files itself: actions go through the CLI
   (see *Actions* below). `ui/runs.py` (`load_runs`) turns run directories into rows,
   newest first. A run whose status is `running` but whose `run.lock` holder is dead is shown as
-  *stopped*. An unreadable `run.json` is listed as such instead of breaking the page.
+  *stopped*, and a `needs_human` run waiting on answers to blocking spec questions
+  (`answers.awaiting_answers`, or answers saved but not resumed yet) as *needs answers*. Both
+  are display-only (`display_status`); `run.json` keeps the real status. An unreadable
+  `run.json` is listed as such instead of breaking the page.
 - **Pages** are Jinja2 templates (`ui/templates/`, autoescaped, since run data includes agent
   output) plus htmx and its SSE extension, vendored in `ui/static/` (`VENDORED.txt` records
   versions, hashes and licenses). The runs list is a fragment (`/runs/list`) that re-fetches
@@ -579,10 +631,22 @@ with headless Chromium).
   `--detach`, so they're ordinary background processes that outlive the UI.
   - **Which actions, when.** `VALID` maps each displayed status to its actions: *running*:
     cancel; *stopped*, *error*, *over budget*: resume and clean; *needs you*: clean;
-    *complete*: none. Buttons are drawn from it (`RunDetail.actions`), and every action route
+    *needs answers*: answer and clean; *complete*: none. Buttons are drawn from it (`RunDetail.actions`), and every action route
     checks it again before running anything: an action that's no longer valid gets 409 with a
     "reload" message; one the CLI refuses gets 422 with the CLI's message (escaped). `base.html`
     lets htmx swap both into the page's `#action-result`.
+  - **Answer** (`POST /runs/<id>/answer`). For *needs answers*, the run page's header shows a
+    form with a textarea per question (`RunDetail.questions`: those no spec pass has used an
+    answer for, prefilled with answers already saved). The route reads only `answer_Q<n>`
+    fields, checks them with `answers.check_answers` (so a refused form never starts a
+    process; 422 with the reason, and the typed answers stay in the page), then runs
+    `advpipe answer <id> --repo <repo> --detach --answer=Q1=<text> ...`
+    (`actions.answer_args`; the `--answer=` form keeps an answer that starts with `-` from
+    looking like an option). On success it redirects to the run page with an "answered"
+    notice; the run goes live there. The SPEC step of the timeline has a panel per spec pass
+    (`_spec_rounds`: the first spec, then "Revision N: with your answers to ..."), each with
+    the blocking questions it asked and their answers; the Spec & context tab highlights the
+    `## Answers` section of `task.md`.
   - **New run** (`/runs/new`). `plan_run` works out what `advpipe run` would do from the
     form (a work item via `item_path` and `load_work_item`, or a typed task; optional branch
     name and config overrides): the effective config (form, then front matter, then
@@ -685,6 +749,13 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   dismiss / fix / still failing, disputes, malformed JSON, coder editing tests, failed gate, budget
   abort, tests passing too early, blocking questions, review findings, worktree cleanup, cost
   table).
+- `test_answers.py`: blocking questions and answers: questions recorded, `record_answers`
+  and its refusals, resume after answers (the revision prompt, the Answers section in the
+  committed `task.md`, what later agents see), new questions in a revision, the spec-pass cap,
+  re-asked questions, interrupted and over-budget revisions, old-format runs, answers files.
+- `test_answers_cli.py`: `advpipe answer` with `--answer`, `--file`/`--template`, prompting,
+  `--no-resume`, `--detach` (through the fake child), refusals and exit codes; what `resume`,
+  `status` and the run summary say while a run waits on answers.
 - `test_resume.py`, `test_parallel.py`, `test_cli.py`, plus unit tests for models, gates,
   stages, workspace and config/prompt sync.
 - `test_events.py` (event log matches the printed progress, ordering, flushing, resume,
@@ -697,6 +768,11 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   missing CSRF → 403, unknown Host → 400, escaped agent text, filters, the polling fragment,
   and the `advpipe ui` command with `uvicorn.run` replaced. Skipped if the `ui` extra isn't
   installed.
+- `test_ui_answers.py`: answering from the web UI: *needs answers* in the list and on the page,
+  the form (one field per question, prefilled when answers are saved), the exact
+  `advpipe answer` argument list, refusals before any process (missing, empty, unknown,
+  too long), token/CSRF, escaping of questions and answers on every page, the SPEC passes in
+  the timeline, and an end-to-end answer through the fake child.
 - `test_ui_detail.py`: the run detail page for runs from the real orchestrator (complete,
   blocked at the spec, stopped in the arbiter's final pass) and for every status; escaping of
   agent text in every file the page reads; quoting in next-step commands; 404s for unknown and

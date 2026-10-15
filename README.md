@@ -64,7 +64,8 @@ your task
    │
    ▼
  1. Spec        writes task.md: goal, acceptance criteria (AC1, AC2, ...), scope, open questions
-   │            (if a question needs a human answer, stops here, before any code)
+   │            (if a question needs a human answer, stops here for you to answer, before
+   │            any code; then revises task.md with your answers and carries on)
    ▼
  2. Tests       test author ⇄ test critic           up to 2 rounds
    │            check: the new tests must exist and must FAIL (nothing is implemented yet)
@@ -242,8 +243,10 @@ git -C path/to/project merge advpipe/<branch>       # accept it
 | **Notes** | E.g. "security scanner not run", or that a run was resumed. |
 
 **If the status is `needs_human`**, the open findings say why. Common cases:
-- **The spec had blocking questions.** Answer them by rewording your task more precisely, then
-  start a new run.
+- **The spec had blocking questions.** Answer them with
+  [`advpipe answer <run-id>`](#advpipe-answer) (or on the run's page in the web UI), and the
+  same run carries on: the spec writer revises `task.md` with your answers, then tests, code
+  and review run as usual.
 - **Checks still failed after the arbiter's final fix pass.** Look at the branch: the remaining
   work is often small.
 
@@ -280,8 +283,9 @@ The **Runs** page lists every run in the repo, newest first, with its status, st
 cost (against the budget while it's running) and age.
 It refreshes itself every few seconds, so runs started from a terminal (or with `--detach`) show
 up and move along by themselves. Hover over a status to see what it means. Filters show all
-runs, running ones, ones that need you (`needs you`, `stopped`, `over budget`, `error`), or
-complete ones.
+runs, running ones, ones that need you (`needs you`, `needs answers`, `stopped`, `over
+budget`, `error`), or complete ones. `needs answers` is a run whose spec stopped on blocking
+questions: answer them on its page.
 
 ### A run's page
 
@@ -291,6 +295,11 @@ Click a run to open its page:
 
 - **Header:** status (hover for what it means), stage, cost against the budget, time, and the
   branch with a copy button. If the run needs you, *What's left open* lists the findings.
+- **Answer the spec's questions:** for a run that *needs answers*, a form with a box per
+  blocking question. *Save answers and continue* runs `advpipe answer ... --detach`: the same
+  run carries on in the background, starting with the spec writer revising `task.md` with your
+  answers (see [`advpipe answer`](#advpipe-answer)). The SPEC step then shows each spec pass
+  with the questions it asked and your answers.
 - **Actions:** buttons for what can be done with the run as it is now (see *Starting and
   managing runs* below): *Cancel run* while it's running; *Resume* for a stopped, failed or
   over-budget run; *Clean up…* for any run that isn't running or complete.
@@ -305,7 +314,7 @@ Click a run to open its page:
   critic's verdict with its findings. SPEC also shows `task.md`; ARBITER shows its rulings.
 - **Report:** `report.md`, once the run has finished.
 
-![A run that needs you: the blocking question from the spec is listed under "What's left open"](docs/screenshots/run-needs-you.png)
+![A run that needs answers: the spec's blocking question, with a box to answer it and continue the run](docs/screenshots/run-needs-you.png)
 
 ### Spec & context
 
@@ -477,6 +486,48 @@ advpipe report <run-id> [--repo PATH]
 
 Prints the run's `report.md`.
 
+### `advpipe answer`
+
+```sh
+advpipe answer <run-id> [--repo PATH]                    # asks each question in the terminal
+advpipe answer <run-id> --answer 'Q1=raise ValueError' [--answer 'Q2=...']
+advpipe answer <run-id> --template > answers.md          # then edit it, and:
+advpipe answer <run-id> --file answers.md
+    [--no-resume] [--detach] [--budget USD] [--config FILE] [--keep-worktree] [--quiet]
+```
+
+When the spec writer marks a question `BLOCKING:` (something it shouldn't guess, such as a
+product decision), the run stops at the spec with `needs_human`, before any tests or code. The
+summary says so:
+
+```
+20261009-101500-ab12cd  needs_human  $0.31  advpipe/s04-refunds
+  2 blocking questions. Answer them, and the run continues: advpipe answer 20261009-101500-ab12cd
+```
+
+`advpipe answer` saves your answers and resumes the same run: same branch, same budget, and
+nothing redone except one more spec-writer pass, which revises `task.md` with your answers.
+advpipe then adds an `## Answers` section to `task.md` with your answers word for word, so the
+test author, critics and reviewers all work from them. The questions and answers also appear
+in `advpipe status <run-id>` and in the report.
+
+- **Answer every question.** Answers are all or nothing; if you don't mind, say so ("your
+  call, pick the simplest"). Each answer can be up to 8,000 characters.
+- **Three ways to answer:** with no options in a terminal, it asks each question in turn (one
+  line each). `--answer ID=TEXT` gives one answer (repeat it). `--file` reads an answers file:
+  each answer starts with a line `Q1: ...` and may go on over the following lines; lines
+  starting with `#` are ignored. `--template` prints one with the questions filled in.
+- `--no-resume` only saves the answers (answer again to change them); `advpipe resume <run-id>`
+  or `advpipe answer <run-id>` then continues. `--detach` resumes in the background. `--budget`,
+  `--config` and `--keep-worktree` work as for `advpipe resume`.
+- **More questions?** The revised spec may ask a new blocking question (numbered on from the
+  last one, so `Q3` after `Q1` and `Q2`); answer it the same way. A spec gets at most
+  `max_rounds_spec` passes (default 3: the first and two rounds of answers). If it's still
+  blocked after that, the run stops for good: reword the work item and start a new run.
+- It refuses a run that isn't waiting on answers, one that's running, and one whose branch was
+  deleted (e.g. by `advpipe clean`). Exit codes are those of `advpipe resume`; 2 if the answers
+  were refused.
+
 ### `advpipe resume`
 
 ```sh
@@ -487,7 +538,9 @@ Continue a run that was interrupted (Ctrl-C, crash, closed laptop), stopped by a
 out of budget. It picks up at the first stage that didn't finish; finished stages aren't redone
 or paid for again. Use `--budget` to raise the limit after `budget_exceeded`; the run keeps the
 new limit (it's saved in the run's `config.json`). Completed runs and `needs_human` runs can't
-be resumed. Start a new run instead. `--detach` resumes in the background, as with
+be resumed, except a run whose spec stopped on blocking questions: answer them with
+[`advpipe answer`](#advpipe-answer), which resumes it for you (or answer with `--no-resume`,
+then `advpipe resume`). `--detach` resumes in the background, as with
 `advpipe run --detach`: it checks the run can be resumed, prints the run id and returns.
 
 ### `advpipe cancel`
@@ -562,6 +615,7 @@ critic  = "claude-sonnet-5-5"   # test critic, code critic, both reviewers
 arbiter = "claude-opus-5-5"
 
 [limits]
+max_rounds_spec     = 3      # spec passes: the first, plus one per round of answers
 max_rounds_tests    = 2      # test author ⇄ critic rounds
 max_rounds_code     = 3      # coder ⇄ critic rounds
 max_turns_per_agent = 40     # steps a single agent may take
@@ -621,8 +675,8 @@ advpipe trades money and time for confidence. That's a bad trade for:
 - **Big, multi-part features.** Split them into independent tasks and run them separately
   (maybe with `--parallel`). advpipe handles one well-scoped change per run.
 - **Changes needing judgement calls only you can make**, such as product decisions or API design
-  trade-offs. The spec writer will flag these as blocking questions and stop, which is the
-  right outcome, but you could have skipped the run.
+  trade-offs. The spec writer will flag these as blocking questions and stop for your answers,
+  which works, but you could have put the decisions in the work item in the first place.
 
 It shines on **well-defined features and bug fixes in tested codebases**, where a second pair
 of eyes catches real mistakes.
@@ -660,6 +714,9 @@ restart Claude Code, and ask:
 ```
 /adversarial-build add a clamp(x, lo, hi) function
 ```
+
+If the spec has blocking questions, Claude asks you in the session, then has the spec writer
+revise `task.md` with your answers and carries on.
 
 The trade-off: in this version, Claude follows the procedure as instructions, so the rules are
 only as reliable as the model's instruction-following. The `advpipe` CLI enforces them in code.
@@ -713,8 +770,9 @@ command passed before anything was implemented. Make sure `[gates] test` actuall
 test files (check `testpaths` or the equivalent in your test runner's config).
 
 **The run stopped at the spec with `needs_human`**: the spec writer found a question it
-shouldn't guess the answer to. It's listed under *Open blocking findings*. Answer it in your
-task description and run again.
+shouldn't guess the answer to. Answer it with `advpipe answer <run-id>`, and the run carries on.
+If it says the spec is still blocked after its last pass, put the answers in your work item and
+start a new run.
 
 **`budget_exceeded`**: `advpipe resume <run-id> --budget 30` continues where it stopped.
 

@@ -9,11 +9,20 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from advpipe import answers
 from advpipe.budget import Budget, BudgetExceeded
 from advpipe.config import Config
 from advpipe.events import EventKind, emit
 from advpipe.gates import gate_findings, run_gates
-from advpipe.models import RESUMABLE, Finding, RunState, Stage, StageResult, Status
+from advpipe.models import (
+    RESUMABLE,
+    Finding,
+    OpenQuestion,
+    RunState,
+    Stage,
+    StageResult,
+    Status,
+)
 from advpipe.runlog import RunLog, is_this_process, render_report
 from advpipe.runner import AgentRunner, Role
 from advpipe.stages import (
@@ -27,8 +36,9 @@ from advpipe.stages import (
     final_author_pass,
     review_stage,
     spec_prompt,
+    spec_revision_prompt,
 )
-from advpipe.workspace import Workspace
+from advpipe.workspace import GitError, Workspace, branch_exists
 
 log = logging.getLogger(__name__)
 
@@ -46,13 +56,36 @@ def check_resumable(repo: Path, run_id: str, *, locked_for_me: bool = False) -> 
     runlog = RunLog.for_run(repo.resolve(), run_id)
     if not (runlog.root / "run.json").is_file():
         raise NotResumable(f"no run {run_id} in {repo}")
-    state = runlog.read_state()
-    if state.status not in RESUMABLE:
+    state = answers.migrate(runlog.read_state())
+    if state.status is Status.NEEDS_HUMAN:
+        _check_answered(repo, runlog, state)
+    elif state.status not in RESUMABLE:
         raise NotResumable(f"run {run_id} is {state.status.value}; nothing to resume")
     holder = runlog.lock_holder()
     if holder is not None and not (locked_for_me and is_this_process(holder)):
         raise NotResumable(f"run {run_id} is still being driven by pid {holder}")
     return state
+
+
+def _check_answered(repo: Path, runlog: RunLog, state: RunState) -> None:
+    """A needs_human run can be resumed only when it stopped on blocking spec questions and
+    every one of them has been answered (docs/ANSWERS_PLAN.md). Raises NotResumable if not."""
+    run_id, cap = state.run_id, answers.max_spec_passes(runlog)
+    if answers.awaiting_answers(state, cap):
+        ids = ", ".join(q.id for q in answers.pending(state))
+        raise NotResumable(
+            f"run {run_id} is waiting on answers to {ids}: {answers.answer_command(run_id)}"
+        )
+    if not answers.answers_ready(state, cap):
+        raise NotResumable(f"run {run_id} is {state.status.value}; nothing to resume")
+    try:
+        exists = branch_exists(repo.resolve(), state.branch)
+    except GitError:
+        exists = False
+    if not exists:
+        raise NotResumable(
+            f"run {run_id} can't be resumed: its branch {state.branch} no longer exists"
+        )
 
 
 def new_run_id() -> str:
@@ -162,7 +195,10 @@ class Orchestrator:
             self.state.cost_by_stage = dict(self.budget.by_stage)
             self.state.calls_by_stage = dict(self.budget.calls_by_stage)
             self.runlog.write_state(self.state)
-            self.runlog.write_text("report.md", render_report(self.state))
+            waiting = answers.awaiting_answers(self.state, self.config.limits.max_rounds_spec)
+            self.runlog.write_text(
+                "report.md", render_report(self.state, waiting_on_answers=waiting)
+            )
             # The last event of every process driving the run; not printed (the CLI prints
             # its own summary).
             self._emit(
@@ -266,14 +302,39 @@ class Orchestrator:
             self.state.worktree_removed = True
 
     async def _spec(self, ctx: Context) -> bool:
-        ws = ctx.workspace
+        """One spec-writer pass: the first spec, or, once a person has answered the blocking
+        questions of the last pass, a revision with the answers. False = the run stops."""
+        ws, state = ctx.workspace, self.state
+        cap = self.config.limits.max_rounds_spec
         self._enter(Stage.SPEC)
-        result = await call_agent(ctx, Role.SPEC_WRITER, spec_prompt(self.state.work_item), "spec")
-        self.runlog.write_text("spec/author.txt", result.text)
-        stray = [f for f in ws.changed_files(self.state.base_commit) if f != "task.md"]
+        given = answers.unapplied(state)
+        number = state.spec_passes + 1
+        if given:
+            # The worktree's task.md was wiped when the run was reopened (Workspace.reopen):
+            # the previous spec is the copy in the run directory.
+            previous = self.runlog.root / "task.md"
+            previous_md = previous.read_text() if previous.is_file() else ""
+            given_ids = ", ".join(q.id for q in given)
+            state.round = number
+            self._emit(
+                "round",
+                f"spec pass {number}/{cap}: revising task.md with the answers to {given_ids}",
+                cap=cap,
+            )
+            self.runlog.write_json(f"spec/pass-{number}/answers.json", answers.answered(state))
+            prompt = spec_revision_prompt(state.work_item, previous_md, answers.answered(state))
+        else:
+            prompt = spec_prompt(state.work_item)
+        result = await call_agent(ctx, Role.SPEC_WRITER, prompt, "spec")
+        state.spec_passes = number
+        for q in given:
+            q.applied = True
+        reply = "spec/author.txt" if number == 1 else f"spec/pass-{number}/author.txt"
+        self.runlog.write_text(reply, result.text)
+        stray = [f for f in ws.changed_files(state.base_commit) if f != "task.md"]
         if stray:
-            ws.restore(self.state.base_commit, stray)
-            self.state.notes.append(
+            ws.restore(state.base_commit, stray)
+            state.notes.append(
                 "Spec writer edited files other than task.md; reverted: " + ", ".join(stray)
             )
         task_path = ws.path / "task.md"
@@ -282,17 +343,54 @@ class Orchestrator:
                 Status.NEEDS_HUMAN, [_finding("S1", "spec", "spec writer did not produce task.md")]
             )
             return False
-        ctx.task_md = task_path.read_text()
-        self.runlog.write_text("task.md", ctx.task_md)
-        questions = blocking_open_questions(ctx.task_md)
-        if questions:
-            self._stop(
-                Status.NEEDS_HUMAN,
-                [_finding(f"Q{i}", "open-question", q) for i, q in enumerate(questions, 1)],
-            )
+        task_md = task_path.read_text()
+        if answers.answered(state):
+            # The person's answers, verbatim, written by code: later agents see them as part
+            # of the contract, and no agent can drop or reword them.
+            task_md = answers.with_answers_section(task_md, state.questions)
+            task_path.write_text(task_md)
+        ctx.task_md = task_md
+        self.runlog.write_text("task.md", task_md)
+        self.runlog.write_text(f"spec/pass-{number}/task.md", task_md)
+        new = self._new_questions(blocking_open_questions(task_md), number)
+        if new:
+            findings = [_finding(q.id, "open-question", q.text) for q in new]
+            self._stop(Status.NEEDS_HUMAN, findings)
+            ids = [q.id for q in new]
+            if number >= cap:
+                note = (
+                    f"The spec still has blocking questions after {number} spec pass(es), the "
+                    "limit (limits.max_rounds_spec). Reword the work item and start a new run."
+                )
+                state.notes.append(note)
+                self._emit("questions", note, ids=ids, answerable=False)
+            else:
+                self._emit(
+                    "questions",
+                    f"spec has {len(new)} blocking question(s); answer them with: "
+                    f"{answers.answer_command(self.run_id)}",
+                    ids=ids,
+                    answerable=True,
+                )
             return False
-        self.state.commits["spec"] = ws.commit("advpipe: spec (task.md)")
+        state.commits["spec"] = ws.commit("advpipe: spec (task.md)")
         return True
+
+    def _new_questions(self, asked: list[str], number: int) -> list[OpenQuestion]:
+        """Record this pass's blocking questions with fresh ids (numbering continues across
+        passes). A question that was already answered isn't asked again: its answer stands."""
+        state = self.state
+        done = {answers.normalise(q.text): q for q in answers.answered(state)}
+        new: list[OpenQuestion] = []
+        for text in asked:
+            again = done.get(answers.normalise(text))
+            if again is not None:
+                state.notes.append(f"Spec writer asked {again.id} again; its answer stands.")
+                continue
+            q = OpenQuestion(id=f"Q{len(state.questions) + 1}", text=text, asked_in=number)
+            state.questions.append(q)
+            new.append(q)
+        return new
 
     async def _settle(self, result: StageResult, author: Role, kind: StageKind) -> bool:
         """Record a stage result; send open findings to the arbiter. False = run stops."""

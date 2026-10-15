@@ -132,6 +132,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+class OpenQuestion(BaseModel):
+    """A question the spec writer marked BLOCKING, and the person's answer to it."""
+
+    id: str  # "Q1", "Q2", ...: unique within the run, never reused
+    text: str  # as the spec writer wrote it, without the BLOCKING: prefix
+    asked_in: int  # the spec pass that asked it (1 = the first spec)
+    answer: str = ""  # empty until answered
+    answered_at: datetime | None = None
+    applied: bool = False  # a spec revision has been given this answer
+
+
 class RunState(BaseModel):
     run_id: str
     work_item: str
@@ -159,6 +170,10 @@ class RunState(BaseModel):
     worktree_removed: bool = False
     notes: list[str] = Field(default_factory=list)
     noise_dropped: int = 0
+    # Every BLOCKING question the spec writer asked, over all passes, with the answers given
+    # (see answers.py), and how many spec-writer passes have finished (1 after the first spec).
+    questions: list[OpenQuestion] = Field(default_factory=list)
+    spec_passes: int = 0
 
 
 RESUMABLE = frozenset({Status.RUNNING, Status.ERROR, Status.BUDGET_EXCEEDED})

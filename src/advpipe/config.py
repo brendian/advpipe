@@ -21,6 +21,9 @@ class Models(_Strict):
 
 
 class Limits(_Strict):
+    # Spec-writer passes per run: the first spec, plus one per round of answers to its
+    # blocking questions. 1 = a blocked spec can't be answered (start a new run instead).
+    max_rounds_spec: PositiveInt = 3
     max_rounds_tests: PositiveInt = 2
     max_rounds_code: PositiveInt = 3
     max_turns_per_agent: PositiveInt = 40
