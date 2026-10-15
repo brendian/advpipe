@@ -9,9 +9,10 @@ import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
+from typer.core import TyperCommand
 
 from advpipe import answers
 from advpipe.answers import AnswerError
@@ -146,6 +147,7 @@ def _detach(
     level: Level | None,
     security_scan: bool | None,
     scan_failures: str | None,
+    bypass_questions: bool | None,
 ) -> None:
     """Start the same run in a background process; print its run id and return at once."""
     args = ["run", "--repo", str(repo.resolve()), "--run-id", run_id]
@@ -159,6 +161,8 @@ def _detach(
         args.append("--security-scan" if security_scan else "--no-security-scan")
     if scan_failures is not None:
         args += ["--scan-failures", scan_failures]
+    if bypass_questions is not None:
+        args.append("--bypass-questions" if bypass_questions else "--no-bypass-questions")
     if keep_worktree:
         args.append("--keep-worktree")
     if item is not None:
@@ -244,11 +248,21 @@ def run(
             "For now every choice blocks (asking and ignoring come later).",
         ),
     ] = None,
+    bypass_questions: Annotated[
+        bool | None,
+        typer.Option(
+            "--bypass-questions/--no-bypass-questions",
+            help="Never stop for blocking questions: the agent answers them itself, with its "
+            "best judgement, and says so in task.md and the report. Default: the work item's "
+            "front matter, else [pipeline] bypass_questions, else off. Rarely the right choice.",
+            show_default=False,
+        ),
+    ] = None,
 ) -> None:
     """Drive work items through the pipeline, leaving a branch per item for human review."""
     item_file = ""
     run_level = parse_level(level) if level is not None else None  # checked by _level_opt
-    item_level, item_scan, item_failures = None, None, None
+    item_level, item_scan, item_failures, item_bypass = None, None, None, None
     if sum(x is not None for x in (work_item, item, from_file)) != 1:
         raise typer.BadParameter("give exactly one of WORK_ITEM, --item or --from-file")
     if from_file is not None:
@@ -266,6 +280,7 @@ def run(
         item_level = parse_level(parsed.level) if parsed.level else None
         item_scan = switch(parsed.security_scan) if parsed.security_scan else None
         item_failures = parsed.scan_failures
+        item_bypass = switch(parsed.bypass_questions) if parsed.bypass_questions else None
         if config is None and parsed.config is not None:
             config = repo / parsed.config
             if not config.is_file():
@@ -289,6 +304,7 @@ def run(
         level=run_level or item_level,
         security_scan=security_scan if security_scan is not None else item_scan,
         scan_failures=scan_failures or item_failures,
+        bypass_questions=bypass_questions if bypass_questions is not None else item_bypass,
     )
     try:
         check_available(cfg.pipeline.level)
@@ -306,6 +322,7 @@ def run(
             level=run_level,
             security_scan=security_scan,
             scan_failures=scan_failures,
+            bypass_questions=bypass_questions,
         )
         return
     _interruptible()
@@ -339,7 +356,12 @@ def run(
 
 
 def _with_run_settings(
-    cfg: Config, *, level: Level | None, security_scan: bool | None, scan_failures: str | None
+    cfg: Config,
+    *,
+    level: Level | None,
+    security_scan: bool | None,
+    scan_failures: str | None,
+    bypass_questions: bool | None,
 ) -> Config:
     """``cfg`` with the level and scan settings from the command line or front matter (the
     caller has picked whichever wins) in its [pipeline] table, so the run's config.json
@@ -351,6 +373,8 @@ def _with_run_settings(
         update["security_scan"] = security_scan
     if scan_failures is not None:
         update["scan_failures"] = scan_failures
+    if bypass_questions is not None:
+        update["bypass_questions"] = bypass_questions
     if not update:
         return cfg
     pipeline = cfg.pipeline.model_validate({**cfg.pipeline.model_dump(), **update})
@@ -361,14 +385,17 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def _answers_given(answer: list[str], file: Path | None) -> dict[str, str]:
-    """Answers from --file, then --answer ID=TEXT (which wins for the same question)."""
+def _answers_given(answer: list[str], file: Path | None) -> tuple[dict[str, str], set[str]]:
+    """Answers from --file, then --answer ID=TEXT (which wins for the same question), and the
+    ids a file bypasses (``Q2: BYPASS``)."""
     given: dict[str, str] = {}
+    skipped: set[str] = set()
     if file is not None:
         try:
-            given.update(answers.parse_answers_file(file.read_text()))
+            from_file, skipped = answers.split_bypass(answers.parse_answers_file(file.read_text()))
         except OSError as e:
             raise AnswerError(f"can't read {file}: {e}") from e
+        given.update(from_file)
     for item in answer:
         qid, sep, text = item.partition("=")
         if not sep or not answers.QUESTION_ID_RE.fullmatch(qid.strip().upper()):
@@ -376,25 +403,67 @@ def _answers_given(answer: list[str], file: Path | None) -> dict[str, str]:
                 f"--answer takes ID=TEXT, like --answer 'Q1=raise ValueError'; got {item!r}"
             )
         given[qid.strip().upper()] = text
-    return given
+        skipped.discard(qid.strip().upper())
+    return given, skipped
 
 
-def _ask(state: RunState) -> dict[str, str]:
-    """Ask each question in the terminal."""
+def _bypass_ids(values: list[str], state: RunState, given: dict[str, str]) -> set[str]:
+    """The question ids ``--bypass`` names: a bare ``--bypass`` (or ``all``) means every
+    question still waiting that isn't answered with --answer or --file."""
+    ids: set[str] = set()
+    for value in values:
+        for part in value.replace(" ", "").split(","):
+            if not part:
+                continue
+            if part.lower() == "all":
+                ids |= {q.id for q in answers.pending(state)} - set(given)
+            elif answers.QUESTION_ID_RE.fullmatch(part.upper()):
+                ids.add(part.upper())
+            else:
+                raise AnswerError(f"--bypass takes question ids like Q2, or nothing; got {part!r}")
+    return ids
+
+
+def _ask(state: RunState) -> tuple[dict[str, str], set[str]]:
+    """Ask each question in the terminal. An empty answer offers Bypass for that question."""
     given: dict[str, str] = {}
+    skipped: set[str] = set()
     questions = answers.to_answer(state)
     typer.echo(
         f"The spec for run {state.run_id} has {len(questions)} blocking question(s). "
-        "Answer each on one line (for longer answers, use --file).",
+        "Answer each on one line (for longer answers, use --file). Leave an answer empty to "
+        "let the agent decide.",
         err=True,
     )
     for q in questions:
         typer.echo(f"\n{q.id}: {q.text}", err=True)
-        given[q.id] = typer.prompt(">", default=q.answer or None, show_default=bool(q.answer))
-    return given
+        while True:
+            text = typer.prompt(">", default=q.answer, show_default=bool(q.answer))
+            if text.strip():
+                given[q.id] = text
+                break
+            if typer.confirm(f"Bypass {q.id}? The agent decides it with its best judgement"):
+                skipped.add(q.id)
+                break
+    return given, skipped
 
 
-@app.command()
+class _AnswerCommand(TyperCommand):
+    """`--bypass` takes question ids, or nothing (every question still waiting). Click can't
+    make a value optional, so a bare `--bypass` is rewritten to `--bypass=all` first."""
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        out: list[str] = []
+        for i, arg in enumerate(args):
+            following = args[i + 1] if i + 1 < len(args) else ""
+            has_value = following.lower() == "all" or answers.QUESTION_ID_RE.fullmatch(
+                following.upper().split(",")[0]
+            )
+            out.append("--bypass=all" if arg == "--bypass" and not has_value else arg)
+        return super().parse_args(ctx, out)
+
+
+@app.command(cls=_AnswerCommand)
 def answer(
     run_id: RunIdArg,
     repo: RepoOpt = Path("."),
@@ -412,6 +481,15 @@ def answer(
             dir_okay=False,
             help="Read the answers from this file: each starts with a line 'Q1: ...' (see "
             "--template).",
+        ),
+    ] = None,
+    bypass: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--bypass",
+            metavar="[IDS]",
+            help="Let the agent decide instead of answering: --bypass for every question not "
+            "answered with --answer, or --bypass Q2 (repeatable) for just those.",
         ),
     ] = None,
     template: Annotated[
@@ -446,25 +524,32 @@ def answer(
         if template:
             typer.echo(answers.answers_template(state), nl=False)
             return
-        if answer or file is not None:
-            given = _answers_given(answer or [], file)
+        skipped: set[str] = set()
+        if answer or file is not None or bypass:
+            given, skipped = _answers_given(answer or [], file)
+            skipped |= _bypass_ids(bypass or [], state, given)
         elif ready:
             given = {}  # answered already (e.g. with --no-resume): just resume
         elif _stdin_is_tty():
-            given = _ask(state)
+            given, skipped = _ask(state)
         else:
             lines = [f"run {run_id} is waiting on answers to:"]
             lines += [f"  {q.id}: {q.text}" for q in answers.to_answer(state)]
             lines.append(
                 f"answer with: advpipe answer {run_id} --answer 'Q1=...' (one per question), "
-                f"or --file FILE (advpipe answer {run_id} --template prints one to fill in)"
+                f"or --file FILE (advpipe answer {run_id} --template prints one to fill in). "
+                f"To let the agent decide instead: advpipe answer {run_id} --bypass"
             )
             typer.echo("\n".join(lines), err=True)
             raise typer.Exit(code=2)
-        if given:
-            saved = answers.record_answers(repo, run_id, given)
+        if given or skipped:
+            saved = answers.record_answers(repo, run_id, given, skipped)
             ids = ", ".join(q.id for q in answers.unapplied(saved))
-            typer.echo(f"answers saved for {ids}", err=True)
+            if ids:
+                typer.echo(f"answers saved for {ids}", err=True)
+            if skipped:
+                names = ", ".join(sorted(skipped, key=lambda i: (len(i), i)))
+                typer.echo(f"Bypass: the agent decides {names}", err=True)
     except AnswerError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=2) from e
@@ -626,7 +711,13 @@ def status(
         lines.append("questions:")
         for q in s.questions:
             lines.append(f"  {q.id}  {_short(q.text, 90)}")
-            lines.append(f"      answer: {_short(q.answer, 84)}" if q.answer else "      (waiting)")
+            if q.answer:
+                who = " (agent's best judgement)" if q.source == "agent" else ""
+                lines.append(f"      answer{who}: {_short(q.answer, 84 - len(who))}")
+            elif q.bypassed:
+                lines.append("      (Bypass: the agent decides when the run resumes)")
+            else:
+                lines.append("      (waiting)")
         if answers.awaiting_answers(s, answers.max_spec_passes(runlog)):
             lines.append(f"answer them: {answers.answer_command(s.run_id)}")
     typer.echo("\n".join(lines))

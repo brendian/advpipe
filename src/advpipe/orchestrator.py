@@ -36,6 +36,7 @@ from advpipe.stages import (
     adversarial_stage,
     arbiter_stage,
     blocking_open_questions,
+    bypass_questions,
     call_agent,
     final_author_pass,
     note_scanner_skipped,
@@ -105,6 +106,12 @@ def check_same_shape(state: RunState, config: Config) -> None:
             f"run {state.run_id} is at level {state.level.value}; a resumed run keeps its "
             "level. Start a new run to change it"
         )
+    if "bypass_questions" in asked and pipeline.bypass_questions != state.bypass_questions:
+        now = "bypassed up front" if state.bypass_questions else "asked as usual"
+        raise NotResumable(
+            f"run {state.run_id} has its blocking questions {now}; a resumed run keeps that. "
+            "Start a new run to change it"
+        )
     scan = pipeline.security_scan
     if "security_scan" in asked and scan is not None and scan != scan_on(state):
         now = "on" if scan_on(state) else "off"
@@ -172,6 +179,7 @@ class Orchestrator:
             level=pipeline.level,
             security_scan=pipeline.security_scan,
             scan_policy=pipeline.scan_failures,
+            bypass_questions=pipeline.bypass_questions,
         )
         state.security_scan = scan_on(state)  # the level's default, when not set
         if state.scan_policy != "block" and state.level is not Level.FULL and state.security_scan:
@@ -208,9 +216,17 @@ class Orchestrator:
         scan = pipeline.security_scan
         if scan is None:
             scan = SHAPES[pipeline.level].security_scan
-        if pipeline.level is not state.level or scan != scan_on(state):
+        if (
+            pipeline.level is not state.level
+            or scan != scan_on(state)
+            or pipeline.bypass_questions != state.bypass_questions
+        ):
             pipeline = pipeline.model_copy(
-                update={"level": state.level, "security_scan": scan_on(state)}
+                update={
+                    "level": state.level,
+                    "security_scan": scan_on(state),
+                    "bypass_questions": state.bypass_questions,
+                }
             )
             cfg = cfg.model_copy(update={"pipeline": pipeline})
         if budget_usd is not None:
@@ -379,79 +395,127 @@ class Orchestrator:
             self.state.worktree_removed = True
 
     async def _spec(self, ctx: Context) -> bool:
-        """One spec-writer pass: the first spec, or, once a person has answered the blocking
-        questions of the last pass, a revision with the answers. False = the run stops."""
+        """The spec writer's passes: the first spec, then a revision each time a person (or,
+        under Bypass, the agent) has answered the blocking questions of the last pass. False =
+        the run stops."""
         ws, state = ctx.workspace, self.state
         cap = self.config.limits.max_rounds_spec
         self._enter(Stage.SPEC)
-        given = answers.unapplied(state)
-        number = state.spec_passes + 1
-        if given:
-            # The worktree's task.md was wiped when the run was reopened (Workspace.reopen):
-            # the previous spec is the copy in the run directory.
-            previous = self.runlog.root / "task.md"
-            previous_md = previous.read_text() if previous.is_file() else ""
-            given_ids = ", ".join(q.id for q in given)
-            state.round = number
-            self._emit(
-                "round",
-                f"spec pass {number}/{cap}: revising task.md with the answers to {given_ids}",
-                cap=cap,
-            )
-            self.runlog.write_json(f"spec/pass-{number}/answers.json", answers.answered(state))
-            prompt = spec_revision_prompt(state.work_item, previous_md, answers.answered(state))
-        else:
-            prompt = spec_prompt(state.work_item)
-        result = await call_agent(ctx, Role.SPEC_WRITER, prompt, "spec")
-        state.spec_passes = number
-        for q in given:
-            q.applied = True
-        reply = "spec/author.txt" if number == 1 else f"spec/pass-{number}/author.txt"
-        self.runlog.write_text(reply, result.text)
-        stray = [f for f in ws.changed_files(state.base_commit) if f != "task.md"]
-        if stray:
-            ws.restore(state.base_commit, stray)
-            state.notes.append(
-                "Spec writer edited files other than task.md; reverted: " + ", ".join(stray)
-            )
-        task_path = ws.path / "task.md"
-        if not task_path.is_file():
-            self._stop(
-                Status.NEEDS_HUMAN, [_finding("S1", "spec", "spec writer did not produce task.md")]
-            )
-            return False
-        task_md = task_path.read_text()
-        if answers.answered(state):
-            # The person's answers, verbatim, written by code: later agents see them as part
-            # of the contract, and no agent can drop or reword them.
-            task_md = answers.with_answers_section(task_md, state.questions)
-            task_path.write_text(task_md)
-        ctx.task_md = task_md
-        self.runlog.write_text("task.md", task_md)
-        self.runlog.write_text(f"spec/pass-{number}/task.md", task_md)
-        new = self._new_questions(blocking_open_questions(task_md), number)
-        if new:
-            findings = [_finding(q.id, "open-question", q.text) for q in new]
-            self._stop(Status.NEEDS_HUMAN, findings)
-            ids = [q.id for q in new]
-            if number >= cap:
-                note = (
-                    f"The spec still has blocking questions after {number} spec pass(es), the "
-                    "limit (limits.max_rounds_spec). Reword the work item and start a new run."
+        while True:
+            number = state.spec_passes + 1
+            # The person chose Bypass for some questions: the spec writer answers them itself,
+            # once, before the revision that uses the answers.
+            await self._bypass(ctx, number)
+            given = answers.unapplied(state)
+            if given:
+                # The worktree's task.md was wiped when the run was reopened
+                # (Workspace.reopen): the previous spec is the copy in the run directory.
+                previous = self.runlog.root / "task.md"
+                previous_md = previous.read_text() if previous.is_file() else ""
+                given_ids = ", ".join(q.id for q in given)
+                state.round = number
+                self._emit(
+                    "round",
+                    f"spec pass {number}/{cap}: revising task.md with the answers to {given_ids}",
+                    cap=cap,
                 )
-                state.notes.append(note)
-                self._emit("questions", note, ids=ids, answerable=False)
+                self.runlog.write_json(f"spec/pass-{number}/answers.json", answers.answered(state))
+                prompt = spec_revision_prompt(state.work_item, previous_md, answers.answered(state))
             else:
+                prompt = spec_prompt(state.work_item)
+            result = await call_agent(ctx, Role.SPEC_WRITER, prompt, "spec")
+            state.spec_passes = number
+            for q in given:
+                q.applied = True
+            reply = "spec/author.txt" if number == 1 else f"spec/pass-{number}/author.txt"
+            self.runlog.write_text(reply, result.text)
+            stray = [f for f in ws.changed_files(state.base_commit) if f != "task.md"]
+            if stray:
+                ws.restore(state.base_commit, stray)
+                state.notes.append(
+                    "Spec writer edited files other than task.md; reverted: " + ", ".join(stray)
+                )
+            task_path = ws.path / "task.md"
+            if not task_path.is_file():
+                self._stop(
+                    Status.NEEDS_HUMAN,
+                    [_finding("S1", "spec", "spec writer did not produce task.md")],
+                )
+                return False
+            task_md = task_path.read_text()
+            if answers.answered(state):
+                # The answers, verbatim, written by code: later agents see them as part of the
+                # contract, and no agent can drop or reword them.
+                task_md = answers.with_answers_section(task_md, state.questions)
+                task_path.write_text(task_md)
+            ctx.task_md = task_md
+            self.runlog.write_text("task.md", task_md)
+            self.runlog.write_text(f"spec/pass-{number}/task.md", task_md)
+            new = self._new_questions(blocking_open_questions(task_md), number)
+            if new and state.bypass_questions:
+                # Bypass up front: nobody is asked. Each pass is still capped; at the cap the
+                # agent's answers go in without another revision and the run begins work.
+                for q in new:
+                    q.bypassed = True
+                ids = [q.id for q in new]
                 self._emit(
                     "questions",
-                    f"spec has {len(new)} blocking question(s); answer them with: "
-                    f"{answers.answer_command(self.run_id)}",
+                    f"spec has {len(new)} blocking question(s); Bypass is on, so the agent "
+                    "decides them",
                     ids=ids,
-                    answerable=True,
+                    answerable=False,
+                    bypassed=True,
                 )
-            return False
-        state.commits["spec"] = ws.commit("advpipe: spec (task.md)")
-        return True
+                if number < cap:
+                    continue
+                await self._bypass(ctx, number)
+                for q in new:
+                    q.applied = True
+                task_md = answers.with_answers_section(task_md, state.questions)
+                task_path.write_text(task_md)
+                ctx.task_md = task_md
+                self.runlog.write_text("task.md", task_md)
+                self.runlog.write_text(f"spec/pass-{number}/task.md", task_md)
+                state.notes.append(
+                    f"The spec still had blocking questions after {number} spec pass(es), the "
+                    "limit (limits.max_rounds_spec); the agent decided them and the run went on "
+                    "(Bypass)."
+                )
+            elif new:
+                findings = [_finding(q.id, "open-question", q.text) for q in new]
+                self._stop(Status.NEEDS_HUMAN, findings)
+                ids = [q.id for q in new]
+                if number >= cap:
+                    note = (
+                        f"The spec still has blocking questions after {number} spec pass(es), "
+                        "the limit (limits.max_rounds_spec). Reword the work item and start a "
+                        "new run."
+                    )
+                    state.notes.append(note)
+                    self._emit("questions", note, ids=ids, answerable=False)
+                else:
+                    self._emit(
+                        "questions",
+                        f"spec has {len(new)} blocking question(s); answer them with: "
+                        f"{answers.answer_command(self.run_id)}",
+                        ids=ids,
+                        answerable=True,
+                    )
+                return False
+            state.commits["spec"] = ws.commit("advpipe: spec (task.md)")
+            return True
+
+    async def _bypass(self, ctx: Context, number: int) -> None:
+        """Have the spec writer answer the questions a person bypassed (docs/LEVELS_PLAN.md
+        §3.6). Does nothing when there are none."""
+        waiting = answers.awaiting_bypass(self.state)
+        if not waiting:
+            return
+        previous = self.runlog.root / "task.md"
+        previous_md = previous.read_text() if previous.is_file() else ""
+        await bypass_questions(
+            ctx, Role.SPEC_WRITER, waiting, previous_md, "spec", f"spec/pass-{number}/bypass.json"
+        )
 
     def _new_questions(self, asked: list[str], number: int) -> list[OpenQuestion]:
         """Record this pass's blocking questions with fresh ids (numbering continues across

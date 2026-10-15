@@ -146,9 +146,9 @@ All code is in `src/advpipe/`.
 |---|---|---|
 | `cli.py` | Typer CLI: `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `levels`, `ui`, `gates` | `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `levels`, `ui`, `gates` |
 | `levels.py` | Pipeline levels as data: what each level runs, and everything derived from that | `SHAPES`, `Shape`, `parse_level`, `roles_for`, `steps_for`, `dropped_safeguards`, `max_agent_calls`, `scan_on`, `level_tag` |
-| `answers.py` | Blocking spec questions and their answers: waiting/ready checks, recording answers, answers files, the Answers section of `task.md` | `record_answers`, `awaiting_answers`, `answers_ready`, `with_answers_section`, `parse_answers_file`, `migrate` |
+| `answers.py` | Blocking spec questions and their answers (or Bypass: the agent decides): waiting/ready checks, recording answers, answers files, the Answers section of `task.md` | `record_answers`, `awaiting_bypass`, `awaiting_answers`, `answers_ready`, `with_answers_section`, `parse_answers_file`, `migrate` |
 | `orchestrator.py` | The state machine; resume; parallel runs | `Orchestrator`, `Orchestrator._run`, `Orchestrator._settle`, `Orchestrator.resume`, `check_same_shape`, `run_many` |
-| `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `test_file_guard`, `run_gate_names`, `Context` |
+| `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `bypass_questions`, `test_file_guard`, `run_gate_names`, `Context` |
 | `models.py` | Pydantic data contracts and validation rules | `Finding`, `Verdict`, `AuthorResponse`, `ArbiterRuling`, `RunState`, `Stage`, `Status`, `Level` |
 | `runner.py` | The agent abstraction and the Claude Agent SDK implementation; role → tools/model table | `AgentRunner`, `SdkAgentRunner`, `Role`, `ROLE_TOOLS`, `ROLE_MODEL`, `build_request` |
 | `gates.py` | Runs check commands; turns failures into findings | `run_gates`, `gate_findings`, `red_gate_findings`, `GateResult` |
@@ -233,6 +233,28 @@ Answering again before resuming replaces the answers. Then:
   again; a note says its answer stands. When the pass that still has blocking questions is
   pass number `max_rounds_spec` (default 3), the run stops for good: not answerable, with a
   note to reword the work item and start a new run.
+- **Bypass** (docs/LEVELS_PLAN.md §3.6). `advpipe answer --bypass` (or `Q2: BYPASS` in an
+  answers file, or an empty answer confirmed in the terminal) records `bypassed = True` on a
+  question instead of an answer: `record_answers(..., bypass=ids)` treats it as dealt with, so
+  the run is resumable (`answers_ready` also holds when a bypassed question still has no
+  answer; `awaiting_bypass` lists them), and an id can't be both answered and bypassed. When
+  `_spec` starts a pass it first calls `_bypass`, which calls `stages.bypass_questions`: one
+  JSON call to the role that asked (`spec-writer` here; the solo agent later), parsed with
+  `call_json_agent` (so one retry on bad JSON) into `BypassAnswers`, charged to stage `spec`,
+  with the reply saved to `spec/pass-N/bypass.json`. Files the call changed are reverted
+  (`task.md` is put back exactly as it was). Each question gets `answer`, `reasoning` and
+  `source = "agent"`; a missing or unusable answer becomes a stand-in (`FALLBACK_ANSWER`) with a
+  note, so the run can't stall. The usual revision pass then runs with those answers, and
+  `with_answers_section` marks them ("agent's best judgement", with the reason) and says so in
+  its intro; with person answers only, its wording is unchanged. Answers the agent already chose
+  are not asked for again if the revision is interrupted. Bypass covers one stop: the next
+  pass's new questions are pending again. `RunState.bypass_questions` (up front: `--bypass-questions`,
+  front matter, `[pipeline]`) makes `_spec` mark each new question bypassed instead
+  of stopping; below the spec-pass cap it loops into the next revision, at the cap it asks the
+  agent, writes the answers into `task.md` without another revision and commits. A resumed run
+  keeps the setting (`check_same_shape` refuses a config that changes it). There is no *Begin
+  work?* decision at the cap yet: without up-front Bypass, the run still stops for good there
+  (`LEVELS_PLAN.md` L3).
 - An interrupted, failed or over-budget revision leaves its answers unapplied, so a plain
   `advpipe resume` runs the revision again.
 - Runs stopped by an older advpipe keep their questions only as open findings
@@ -486,6 +508,7 @@ task.md         copy of the spec (the latest pass, with the Answers section)
 spec/author.txt the spec writer's reply (first pass)
 spec/pass-N/{task.md, author.txt, answers.json}   each spec pass's task.md; for passes N ≥ 2
                 (revisions after answers) also the reply and the questions and answers given
+spec/pass-N/bypass.json   the agent's own answers to bypassed questions, for the pass that used them
 stage-tests/round-N/{author.txt, diff.patch, critic.json, gates.json}
 stage-code/round-N/{author.txt, diff.patch, critic.json, gates.json}
 stage-*/round-N/critic.json is absent at levels without critics (tests)
@@ -570,8 +593,8 @@ Extra fields by kind:
 | `ruling` | each arbiter ruling | `finding_id`, `decision` |
 | `status` | budget exceeded, interrupted, and the final event of every process | `status`; the final one adds `final: true` and `total_usd` |
 | `error` | an unexpected exception ended the run | |
-| `questions` | the spec stopped on blocking questions | `ids`; `answerable` (false once the spec-pass cap is reached) |
-| `answers` | answers were recorded (`advpipe answer`, written by that process) | `ids` |
+| `questions` | the spec stopped on blocking questions (or, with Bypass up front, found some) | `ids`; `answerable` (false once the spec-pass cap is reached, or under Bypass); `bypassed: true` (Bypass up front) |
+| `answers` | answers were recorded (`advpipe answer`, written by that process), or the agent answered bypassed questions | `ids`; `bypassed` (ids a person bypassed, when there are any); `agent: true` (the agent's own answers, under Bypass) |
 
 The final `status` event is written with `echo=False`: it isn't printed, because the CLI prints
 its own summary. Resumed runs append to the same file, so a run's whole history is one file. A
@@ -623,8 +646,8 @@ adds a "Cleaned up" note to `run.json` and `report.md`.
 
 `advpipe run --item FILE` reads the task from a file (`workitem.load_work_item`). An optional
 front-matter block (a first line of `---`, `key: value` lines, a closing `---`) sets `name`,
-`config`, and the run settings `level`, `security_scan` (yes/no) and `scan_failures`
-(`RUN_KEYS`), whose values are checked as the file is read (an error names the file and line). It's parsed by hand, so there's no YAML dependency, and it's strict: unknown keys,
+`config`, and the run settings `level`, `security_scan` (yes/no), `scan_failures` and
+`bypass_questions` (yes/no) (`RUN_KEYS`), whose values are checked as the file is read (an error names the file and line). It's parsed by hand, so there's no YAML dependency, and it's strict: unknown keys,
 repeated keys, empty values, malformed lines, a missing closing `---` and an empty body are
 all errors, reported with file and line. Command-line options override front matter, and a
 front-matter `config` is relative to the repo root. The body (without front matter) becomes
@@ -873,6 +896,12 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   to the level default; the scan toggle at `full` and below; old runs; resume keeping the level
   and refusing a config that changes it; an `adversarial` run end to end; the summary line,
   `status` and `advpipe levels`.
+- `test_bypass.py`: Bypass: recording (all, mixed, both-answered-and-bypassed refused), the
+  bypass call and revision on resume (reverted files, retry on bad JSON, the stand-in answer,
+  an interrupted revision keeping the agent's answers), Bypass covering one stop, the marked
+  Answers section and report, Bypass up front (at and below the cap, precedence of command line
+  over front matter over config, a resumed run keeping it), and `advpipe answer --bypass` in
+  all its forms.
 - `test_answers_cli.py`: `advpipe answer` with `--answer`, `--file`/`--template`, prompting,
   `--no-resume`, `--detach` (through the fake child), refusals and exit codes; what `resume`,
   `status` and the run summary say while a run waits on answers.

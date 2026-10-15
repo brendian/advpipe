@@ -9,11 +9,13 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from advpipe.answers import MAX_ANSWER_CHARS, MAX_REASONING_CHARS
 from advpipe.budget import Budget
 from advpipe.config import Config
 from advpipe.events import EventKind, emit, gate_statuses
@@ -31,6 +33,7 @@ from advpipe.levels import scan_on
 from advpipe.models import (
     ArbiterRuling,
     AuthorResponse,
+    BypassAnswers,
     Dispute,
     Finding,
     Level,
@@ -230,7 +233,13 @@ def spec_revision_prompt(
     work_item: str, previous_task_md: str, questions: list[OpenQuestion]
 ) -> str:
     """The spec writer's next pass, after a person answered its blocking questions."""
-    qa = "\n\n".join(f"{q.id}: {q.text}\nAnswer: {q.answer}" for q in questions if q.answer)
+    qa = "\n\n".join(
+        f"{q.id}: {q.text}\nAnswer"
+        + (" (your own best judgement: the person chose Bypass)" if q.source == "agent" else "")
+        + f": {q.answer}"
+        for q in questions
+        if q.answer
+    )
     previous = previous_task_md.strip() or "(missing)"
     return (
         f"Work item: {work_item}\n\n"
@@ -241,6 +250,112 @@ def spec_revision_prompt(
         f"# Questions and answers\n\n{qa}\n\n"
         "Revise the spec: write the complete task.md again at the repository root, following "
         'the section "Revising after answers" in your instructions.'
+    )
+
+
+def bypass_prompt(work_item: str, task_md: str, questions: list[OpenQuestion]) -> str:
+    """Ask the agent that wrote task.md to answer its own blocking questions, because the
+    person chose Bypass. Reply is JSON; the agent edits nothing."""
+    listed = "\n".join(f"{q.id}: {q.text}" for q in questions)
+    return (
+        f"Work item: {work_item}\n\n"
+        "The target repository is your current working directory.\n\n"
+        "You wrote the task.md below and marked the questions listed after it BLOCKING. The "
+        "person who started the run has chosen to let you decide them yourself.\n\n"
+        f"# Your task.md\n\n{_fence(task_md.strip() or '(missing)', 'markdown')}\n\n"
+        f"# Questions to decide\n\n{listed}\n\n"
+        "Answer every question with your best judgement: read the code if it helps, pick the "
+        "answer a careful engineer would pick, and give a one-paragraph reason. Do not edit "
+        "or create any file. Reply with JSON only, in this shape:\n\n"
+        + _fence(
+            '{"answers": [{"id": "Q1", "answer": "...", "reasoning": "..."}]}',
+            "json",
+        )
+    )
+
+
+FALLBACK_ANSWER = (
+    "No answer given; use your best judgement and record the choice under Assumptions."
+)
+FALLBACK_REASON = "The agent gave no usable answer when asked, so the run went on without one."
+
+
+async def bypass_questions(
+    ctx: Context,
+    role: Role,
+    questions: list[OpenQuestion],
+    previous_task_md: str,
+    stage: str,
+    rel_path: str,
+) -> None:
+    """The person chose Bypass for ``questions``: ask ``role`` (the agent that asked them) for
+    its own answers, once, and record them with ``source="agent"``.
+
+    One JSON call, retried once on bad JSON (``call_json_agent``). Whatever files the call
+    changed are put back. A question the agent leaves unanswered gets a stand-in answer, so
+    the run can't stall. The reply is saved to ``rel_path`` in the run directory and is never
+    shown to later agents: they see only the Answers section of task.md.
+    """
+    if not questions:
+        return
+    state, ws = ctx.state, ctx.workspace
+    task_path = ws.path / "task.md"
+    before = task_path.read_text() if task_path.is_file() else None
+    ids = [q.id for q in questions]
+    ctx.emit("round", f"the agent decides {', '.join(ids)} itself (Bypass)")
+    prompt = bypass_prompt(state.work_item, previous_task_md, questions)
+    parsed, raw = await call_json_agent(ctx, role, prompt, stage, BypassAnswers)
+    stray = [f for f in ws.changed_files(state.base_commit) if f != "task.md"]
+    if stray:
+        ws.restore(state.base_commit, stray)
+        state.notes.append(
+            f"{role.value} edited files while answering its own questions; reverted: "
+            + ", ".join(stray)
+        )
+    if before is None:
+        task_path.unlink(missing_ok=True)
+    else:
+        task_path.write_text(before)
+    given = {a.id.strip().upper(): a for a in parsed.answers} if parsed else {}
+    now = datetime.now(UTC)
+    fallback: list[str] = []
+    for q in questions:
+        a = given.get(q.id)
+        text = a.answer.strip() if a else ""
+        if text:
+            q.answer = text[:MAX_ANSWER_CHARS]
+            q.reasoning = a.reasoning.strip()[:MAX_REASONING_CHARS] if a else ""
+        else:
+            q.answer, q.reasoning = FALLBACK_ANSWER, FALLBACK_REASON
+            fallback.append(q.id)
+        q.source, q.answered_at, q.applied = "agent", now, False
+    if fallback:
+        state.notes.append(
+            f"{role.value} gave no usable answer to {', '.join(fallback)} under Bypass; "
+            "a stand-in answer was recorded."
+        )
+    ctx.runlog.write_json(
+        rel_path,
+        {
+            "asked": ids,
+            "answers": [
+                {
+                    "id": q.id,
+                    "answer": q.answer,
+                    "reasoning": q.reasoning,
+                    "stand_in": q.id in fallback,
+                }
+                for q in questions
+            ],
+            "reply": raw,
+        },
+    )
+    ctx.save()
+    ctx.emit(
+        "answers",
+        f"{role.value} answered {', '.join(ids)} with its best judgement (Bypass)",
+        ids=ids,
+        agent=True,
     )
 
 

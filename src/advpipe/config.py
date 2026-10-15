@@ -56,6 +56,7 @@ class Pipeline(_Strict):
     level: Level = Level.FULL
     security_scan: bool | None = None  # None: the level's default (on at full only)
     scan_failures: ScanPolicy = "ask"  # what a failing scan means below full
+    bypass_questions: bool = False  # the agent answers blocking questions; nobody is asked
 
     @field_validator("level", mode="before")
     @classmethod

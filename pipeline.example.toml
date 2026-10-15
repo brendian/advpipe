@@ -27,3 +27,4 @@ standards_doc = "CLAUDE.md"  # given to the standards reviewer
 level = "full"            # basic | reviewer | tests | adversarial | full (or 1-5)
 # security_scan = true    # leave out to use the level's default (on at full only)
 scan_failures = "ask"     # below full, what a failing scan means: ask | ignore | block
+bypass_questions = false   # true: the agent answers blocking questions itself, without asking you

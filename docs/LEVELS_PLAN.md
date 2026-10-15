@@ -55,7 +55,7 @@ only appear where today's pipeline would end the run, fail, or never get asked.
 >   UI's role tables: L3). So `roles_for` returns `list[str]` (`Role` values, which compare
 >   equal to `Role` members) with `"solo"` for levels 1 and 2. L3 can tighten it to
 >   `list[Role]`. `Stage.SOLO` was added now, for `steps_for`.
-> - `bypass_questions` (config, front matter, CLI) waits for L2 rather than being accepted and
+> - `bypass_questions` (config, front matter, CLI) waited for L2 rather than being accepted and
 >   doing nothing.
 > - Up-front `scan_failures = "ignore"` also falls back to `block` with a note in L0, like `ask`
 >   (the run's `scan_policy` is stored as `block`, so a run resumed after L3 keeps blocking).
@@ -82,6 +82,30 @@ only appear where today's pipeline would end the run, fail, or never get asked.
 >   no test critic).
 > - The web UI is still unchanged (L5): a Tests run's page renders, with the six fixed steps;
 >   `review/single.json` isn't shown yet.
+
+> **L2 done** (2026-10-14): Bypass for the spec writer (levels 3 to 5), up front and per
+> stop; tests in `tests/test_bypass.py`. Where the code differs from the text:
+> - `--bypass` can't take an optional value in Typer/Click, so `advpipe answer` rewrites a bare
+>   `--bypass` to `--bypass=all` before parsing (`cli._AnswerCommand`); `--bypass Q2` (repeatable,
+>   or `Q2,Q3`) works as planned. A bare `--bypass` covers questions that are still *pending*
+>   (not ones already answered and waiting to be used; name those to replace their answers).
+> - `advpipe run` has `--bypass-questions/--no-bypass-questions` (a pair, like the scan switch),
+>   so the command line can switch off a config or front-matter `true`.
+> - The `answers` event gets `bypassed` only when there are bypassed ids (so a run without Bypass
+>   writes the same events as before); the agent's own answers add an `answers` event with
+>   `agent: true`, and a `questions` event under Bypass up front has `bypassed: true`.
+> - The helper for L3's solo stage is `stages.bypass_questions(ctx, role, questions,
+>   previous_task_md, stage, rel_path)`; the spec stage calls it with `Role.SPEC_WRITER`. Its
+>   stray-file revert uses `state.base_commit`, which is right for the spec stage; the solo stage
+>   (which has no earlier commit either) can use it as is.
+> - `answers_ready` also holds for a run whose only settled questions are bypassed ones with no
+>   agent answer yet (`answers.awaiting_bypass`), so such a run is resumable.
+> - The revision prompt marks the agent's own answers ("your own best judgement: the person
+>   chose Bypass") but never gives the spec writer its earlier reasoning.
+> - At the spec-pass cap without up-front Bypass the run still stops for good, as planned for
+>   L2 (*Begin work?* comes with L3).
+> - Not done here (later milestones): the UI form's Bypass boxes (L5), the skill (L4), and the
+>   report/`status` text beyond the questions section (L4).
 
 This plan is for **future Claude Code sessions**. Each milestone below (L0 to L6) is sized for
 one session and ends with tests. See [How to use this plan](#how-to-use-this-plan-in-a-session).

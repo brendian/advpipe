@@ -30,9 +30,10 @@ KEYS = {
     "level": "how much checking: basic, reviewer, tests, adversarial, full (or 1-5)",
     "security_scan": "run the security scan: yes or no (default: on at level full only)",
     "scan_failures": "below level full, what a failing security scan means: ask, ignore, block",
+    "bypass_questions": "yes: the agent answers blocking questions itself, without asking you",
 }
 # The keys that set how the run goes (the rest say where it starts from).
-RUN_KEYS = ("level", "security_scan", "scan_failures")
+RUN_KEYS = ("level", "security_scan", "scan_failures", "bypass_questions")
 SWITCH = {"yes": True, "true": True, "no": False, "false": False}
 SCAN_FAILURES = ("ask", "ignore", "block")
 _LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)")
@@ -61,6 +62,7 @@ _CHECKS: dict[str, Callable[[str], object]] = {
     "level": parse_level,
     "security_scan": switch,
     "scan_failures": _scan_failures,
+    "bypass_questions": switch,
 }
 
 
@@ -73,6 +75,7 @@ class WorkItem:
     level: str | None = None
     security_scan: str | None = None
     scan_failures: str | None = None
+    bypass_questions: str | None = None
 
 
 def parse_work_item(text: str, source: str = "work item") -> WorkItem:

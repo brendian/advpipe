@@ -479,6 +479,10 @@ advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
 - `--scan-failures ask|ignore|block`: below `full`, what a failing security scan means. For
   now every choice blocks (the hits go to the coder like a failing test); asking you, and
   ignoring hits, come later. A run started with `ask` or `ignore` notes that in its report.
+- `--bypass-questions` / `--no-bypass-questions`: never stop for blocking questions; the agent
+  answers them itself with its best judgement (see [Bypass](#bypass-let-the-agent-decide)).
+  Default: the work item's front matter, else `[pipeline] bypass_questions`, else off. Rarely
+  the right choice.
 - `--keep-worktree`: don't delete the working copy after a successful run.
 - `--quiet` / `-q`: don't print live progress.
 - `--detach`: run in the background. advpipe prints the run id and returns at once; the run
@@ -519,6 +523,7 @@ Add stock level changes with a change history...
 - `level`: as with `--level` (a name or 1-5).
 - `security_scan`: `yes` or `no`, as with `--security-scan` / `--no-security-scan`.
 - `scan_failures`: `ask`, `ignore` or `block`, as with `--scan-failures`.
+- `bypass_questions`: `yes` or `no`, as with `--bypass-questions` / `--no-bypass-questions`.
 
 Only these keys are allowed, one `key: value` per line; anything else (or a value that isn't
 one of the allowed ones) is an error, with the file and line, so typos don't go unnoticed. Options on the command line win over front matter. A file with no text after
@@ -551,6 +556,7 @@ advpipe answer <run-id> [--repo PATH]                    # asks each question in
 advpipe answer <run-id> --answer 'Q1=raise ValueError' [--answer 'Q2=...']
 advpipe answer <run-id> --template > answers.md          # then edit it, and:
 advpipe answer <run-id> --file answers.md
+advpipe answer <run-id> --bypass [Q2]                    # let the agent decide (all, or just Q2)
     [--no-resume] [--detach] [--budget USD] [--config FILE] [--keep-worktree] [--quiet]
 ```
 
@@ -569,8 +575,8 @@ advpipe then adds an `## Answers` section to `task.md` with your answers word fo
 test author, critics and reviewers all work from them. The questions and answers also appear
 in `advpipe status <run-id>` and in the report.
 
-- **Answer every question.** Answers are all or nothing; if you don't mind, say so ("your
-  call, pick the simplest"). Each answer can be up to 8,000 characters.
+- **Answer every question.** Answers are all or nothing: answer each one, or Bypass it (below).
+  Each answer can be up to 8,000 characters.
 - **Three ways to answer:** with no options in a terminal, it asks each question in turn (one
   line each). `--answer ID=TEXT` gives one answer (repeat it). `--file` reads an answers file:
   each answer starts with a line `Q1: ...` and may go on over the following lines; lines
@@ -578,6 +584,26 @@ in `advpipe status <run-id>` and in the report.
 - `--no-resume` only saves the answers (answer again to change them); `advpipe resume <run-id>`
   or `advpipe answer <run-id>` then continues. `--detach` resumes in the background. `--budget`,
   `--config` and `--keep-worktree` work as for `advpipe resume`.
+- **Bypass: let the agent decide** <a id="bypass-let-the-agent-decide"></a>. For questions you
+  don't want to answer, `--bypass` lets the spec writer answer them with its best judgement.
+  A bare `--bypass` covers every question you didn't answer with `--answer` or `--file`;
+  `--bypass Q2` (repeat it, or `Q2,Q3`) covers just those. In an answers file, write `Q2: BYPASS`
+  (exactly that word) instead of an answer, and in the terminal, leave an answer empty and
+  confirm "Bypass Q2?". When the run resumes, the spec writer is called once, for those
+  questions only, to give each an answer and a one-paragraph reason (it may not edit files:
+  anything it changes is put back); then the usual revision pass uses them. If it gives no
+  usable answer, a stand-in ("No answer given; use your best judgement and record the choice
+  under Assumptions") is recorded, so the run can't stall. Agent answers are marked everywhere:
+  in `task.md`'s `## Answers` section (*Answer (agent's best judgement)*, with the reason), in
+  the report and in `advpipe status`. Bypass covers only the stop it was chosen at: if the
+  revision asks new blocking questions, the run stops again, and you can answer or Bypass those.
+  The reply itself is saved as `spec/pass-N/bypass.json` in the run directory and is never shown
+  to later agents; they see only the `## Answers` section.
+- **Bypass up front.** `advpipe run --bypass-questions` (or `bypass_questions: yes` in a work
+  item's front matter, or `[pipeline] bypass_questions = true`) skips the stop altogether: each
+  blocking question is answered by the agent as it comes up. Spec passes are still capped by
+  `max_rounds_spec`; at the cap the agent's answers go into `task.md` without another
+  revision, and the run goes on. A resumed run keeps this setting.
 - **More questions?** The revised spec may ask a new blocking question (numbered on from the
   last one, so `Q3` after `Q1` and `Q2`); answer it the same way. A spec gets at most
   `max_rounds_spec` passes (default 3: the first and two rounds of answers). If it's still
@@ -709,6 +735,7 @@ standards_doc = "CLAUDE.md"  # your coding conventions, given to the standards r
 level         = "full"       # basic | reviewer | tests | adversarial | full (or 1-5)
 # security_scan = true       # leave out to use the level's default (on at full only)
 scan_failures = "ask"        # below full, what a failing scan means: ask | ignore | block
+bypass_questions = false     # true: the agent answers blocking questions itself, nobody is asked
 ```
 
 **Tips:**
@@ -860,7 +887,7 @@ Run `advpipe resume <run-id>`.
 **A run started with `--detach` seems stuck**: look at `.advpipe/runs/<run-id>/console.log`
 and `advpipe status <run-id>`.
 
-**`unknown key '...' (known keys: name, config, level, security_scan, scan_failures)`**: a
+**`unknown key '...' (known keys: name, config, level, security_scan, scan_failures, bypass_questions)`**: a
 work-item file's front matter may only set those keys.
 
 **"level X isn't available yet"**: only `tests`, `adversarial` and `full` can be run so far. Change

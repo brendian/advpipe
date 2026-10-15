@@ -156,6 +156,23 @@ class OpenQuestion(BaseModel):
     answer: str = ""  # empty until answered
     answered_at: datetime | None = None
     applied: bool = False  # a spec revision has been given this answer
+    # Bypass (docs/LEVELS_PLAN.md §3.6): the person chose to let the agent decide. The answer
+    # then comes from the agent, with its one-paragraph reason, and `source` says so.
+    source: Literal["person", "agent"] = "person"
+    reasoning: str = ""
+    bypassed: bool = False  # the person chose Bypass; the agent's answer may not exist yet
+
+
+class BypassAnswer(BaseModel):
+    id: str
+    answer: str = ""
+    reasoning: str = ""
+
+
+class BypassAnswers(BaseModel):
+    """An agent's reply when a person chose Bypass: its own answer to each question."""
+
+    answers: list[BypassAnswer] = Field(default_factory=list)
 
 
 class RunState(BaseModel):
@@ -195,6 +212,8 @@ class RunState(BaseModel):
     security_scan: bool | None = None  # None: an old run, so the level's default
     # What a failing security scan below full means: "block" makes its hits blocking findings.
     scan_policy: ScanPolicy = "ask"
+    # Bypass up front: blocking questions never stop the run; the agent answers them (L2).
+    bypass_questions: bool = False
 
 
 RESUMABLE = frozenset({Status.RUNNING, Status.ERROR, Status.BUDGET_EXCEEDED})

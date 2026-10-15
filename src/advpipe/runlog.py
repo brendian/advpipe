@@ -194,9 +194,17 @@ def _questions(state: RunState, waiting: bool) -> list[str]:
     lines = ["## Questions and answers"]
     for q in state.questions:
         lines.append(f"- **{q.id}** (spec pass {q.asked_in}): {q.text}")
-        if q.answer:
+        if q.answer and q.source == "agent":
+            why = "you chose Bypass up front" if state.bypass_questions else "you chose Bypass"
+            answer = q.answer.strip().replace("\n", "\n    ")
+            lines.append(f"  - **Answer (agent's best judgement, {why}):** {answer}")
+            if q.reasoning.strip():
+                lines.append(f"  - **Reason:** {' '.join(q.reasoning.split())}")
+        elif q.answer:
             answer = q.answer.strip().replace("\n", "\n    ")
             lines.append(f"  - **Answer:** {answer}")
+        elif q.bypassed:
+            lines.append("  - (Bypass: the agent decides when the run resumes)")
         else:
             lines.append("  - (not answered" + (" yet)" if waiting else ")"))
     return [*lines, ""]
@@ -205,15 +213,21 @@ def _questions(state: RunState, waiting: bool) -> list[str]:
 def _level(state: RunState) -> list[str]:
     """The run's level and what it leaves out. Just the name for full with the scan on."""
     scan = scan_on(state)
+    up_front = (
+        ["- **Blocking questions:** bypassed up front; the agent answers them itself"]
+        if state.bypass_questions
+        else []
+    )
     if state.level is Level.FULL and scan:
-        return [f"- **Level:** {state.level.value}"]
+        return [f"- **Level:** {state.level.value}", *up_front]
     agents = len(roles_for(state.level))
     lines = [
         f"- **Level:** {state.level.value} ({level_number(state.level)} of {len(LEVEL_ORDER)}): "
         f"{agents} agent{'s' if agents != 1 else ''} · security scan {'on' if scan else 'off'}",
         "- **Not done at this level:**",
     ]
-    return lines + [f"  - {line}" for line in dropped_safeguards(state.level, scan)]
+    lines += [f"  - {line}" for line in dropped_safeguards(state.level, scan)]
+    return lines + up_front
 
 
 def render_report(state: RunState, *, waiting_on_answers: bool = False) -> str:
