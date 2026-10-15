@@ -94,8 +94,23 @@ class ArbiterRuling(BaseModel):
     rulings: list[Ruling] = Field(default_factory=list)
 
 
+class Level(StrEnum):
+    """How much checking a run gets, from one agent (basic) to the whole pipeline (full).
+    What each level runs is in levels.py (``SHAPES``); a person picks it, never an agent."""
+
+    BASIC = "basic"
+    REVIEWER = "reviewer"
+    TESTS = "tests"
+    ADVERSARIAL = "adversarial"
+    FULL = "full"
+
+
+ScanPolicy = Literal["ask", "ignore", "block"]
+
+
 class Stage(StrEnum):
     INIT = "INIT"
+    SOLO = "SOLO"  # levels basic and reviewer: one agent writes task.md, tests and code
     SPEC = "SPEC"
     TESTS = "TESTS"
     CODE = "CODE"
@@ -174,6 +189,12 @@ class RunState(BaseModel):
     # (see answers.py), and how many spec-writer passes have finished (1 after the first spec).
     questions: list[OpenQuestion] = Field(default_factory=list)
     spec_passes: int = 0
+    # Set when the run is created and never changed, resume included (docs/LEVELS_PLAN.md).
+    # Runs recorded before levels existed load as full with the security scan on.
+    level: Level = Level.FULL
+    security_scan: bool | None = None  # None: an old run, so the level's default
+    # What a failing security scan below full means: "block" makes its hits blocking findings.
+    scan_policy: ScanPolicy = "ask"
 
 
 RESUMABLE = frozenset({Status.RUNNING, Status.ERROR, Status.BUDGET_EXCEEDED})

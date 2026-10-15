@@ -10,12 +10,13 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from advpipe.config import load_config
 from advpipe.ui.runs import RunRow, load_runs, title_of
 from advpipe.workitem import (
+    RUN_KEYS,
     WorkItem,
     WorkItemError,
     format_work_item,
@@ -353,7 +354,11 @@ def _config_checks(repo: Path, config: str) -> list[Check]:
 
 
 def _encode(draft: Draft) -> bytes:
-    data = format_work_item(draft.item()).encode("utf-8")
+    return _encode_item(draft.item())
+
+
+def _encode_item(item: WorkItem) -> bytes:
+    data = format_work_item(item).encode("utf-8")
     if len(data) > MAX_BYTES:
         raise WorkItemError(f"the work item is over {MAX_BYTES // 1000} kB")
     return data
@@ -377,13 +382,17 @@ def save_item(items_dir: Path, draft: Draft) -> bool:
     current = path.read_bytes()
     if draft.base and digest(current) != draft.base:
         raise ItemConflict(draft.rel)
-    data = _encode(draft)
     try:
-        if parse_work_item(current.decode("utf-8")) == draft.item():
-            return False
+        on_disk: WorkItem | None = parse_work_item(current.decode("utf-8"))
     except (UnicodeDecodeError, WorkItemError):
-        pass
-    path.write_bytes(data)
+        on_disk = None
+    item = draft.item()
+    if on_disk is not None:
+        # The editor has no fields for the run settings yet: keep the file's.
+        item = replace(item, **{key: getattr(on_disk, key) for key in RUN_KEYS})
+        if on_disk == item:
+            return False
+    path.write_bytes(_encode_item(item))
     return True
 
 

@@ -1,4 +1,5 @@
-"""The CLI: `advpipe run | answer | resume | cancel | clean | status | report | ui | gates`."""
+"""The CLI: `advpipe run | answer | resume | cancel | clean | status | report | levels | ui |
+gates`."""
 
 from __future__ import annotations
 
@@ -14,20 +15,34 @@ import typer
 
 from advpipe import answers
 from advpipe.answers import AnswerError
-from advpipe.config import load_config
+from advpipe.config import Config, load_config
 from advpipe.control import CONSOLE_LOG, ControlError, cancel_run, clean_run, start_detached
 from advpipe.gates import run_gates
-from advpipe.models import RunState, Status
+from advpipe.levels import (
+    LEVEL_INFO,
+    LEVEL_ORDER,
+    SHAPES,
+    check_available,
+    dropped_safeguards,
+    level_number,
+    level_tag,
+    max_agent_calls,
+    parse_level,
+    roles_for,
+    scan_on,
+)
+from advpipe.models import Level, RunState, Status
 from advpipe.orchestrator import (
     NotResumable,
     Orchestrator,
     check_resumable,
+    check_same_shape,
     new_run_id,
     run_many,
 )
 from advpipe.runlog import RunLog, check_run_id, list_runs
 from advpipe.runner import SdkAgentRunner
-from advpipe.workitem import WorkItemError, load_work_item
+from advpipe.workitem import SCAN_FAILURES, WorkItemError, load_work_item, switch
 
 app = typer.Typer(no_args_is_help=True, help="Adversarial multi-agent coding pipeline.")
 
@@ -54,6 +69,21 @@ def _run_id_arg(value: str | None) -> str | None:
 RunIdArg = Annotated[str, typer.Argument(callback=_run_id_arg, help="Run id (see advpipe status).")]
 
 
+def _level_opt(value: str | None) -> Level | None:
+    if value is None:
+        return None
+    try:
+        return parse_level(value)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+
+
+def _scan_failures_opt(value: str | None) -> str | None:
+    if value is not None and value not in SCAN_FAILURES:
+        raise typer.BadParameter(f"use one of {', '.join(SCAN_FAILURES)}")
+    return value
+
+
 @app.callback()
 def main() -> None:
     """Adversarial multi-agent coding pipeline."""
@@ -72,7 +102,11 @@ def make_progress(quiet: bool, label: str = "") -> Callable[[str], None]:
 
 
 def _summary(state: RunState, runlog: RunLog) -> None:
-    typer.echo(f"{state.run_id}  {state.status.value}  ${state.cost_usd:.2f}  {state.branch}")
+    tag = level_tag(state)  # nothing for full with the scan on: that line reads as it always has
+    typer.echo(
+        f"{state.run_id}  {state.status.value}  ${state.cost_usd:.2f}  {state.branch}"
+        + (f"  [{tag}]" if tag else "")
+    )
     if answers.awaiting_answers(state, answers.max_spec_passes(runlog)):
         n = len(answers.pending(state))
         typer.echo(
@@ -109,6 +143,9 @@ def _detach(
     config: Path | None,
     name: str | None,
     keep_worktree: bool,
+    level: Level | None,
+    security_scan: bool | None,
+    scan_failures: str | None,
 ) -> None:
     """Start the same run in a background process; print its run id and return at once."""
     args = ["run", "--repo", str(repo.resolve()), "--run-id", run_id]
@@ -116,6 +153,12 @@ def _detach(
         args += ["--config", str(config.resolve())]
     if name is not None:
         args += ["--name", name]
+    if level is not None:
+        args += ["--level", level.value]
+    if security_scan is not None:
+        args.append("--security-scan" if security_scan else "--no-security-scan")
+    if scan_failures is not None:
+        args += ["--scan-failures", scan_failures]
     if keep_worktree:
         args.append("--keep-worktree")
     if item is not None:
@@ -175,9 +218,37 @@ def run(
     run_id: Annotated[
         str | None, typer.Option(hidden=True, callback=_run_id_arg, help="Use this run id.")
     ] = None,
+    level: Annotated[
+        str | None,
+        typer.Option(
+            callback=_level_opt,
+            help="How much checking: basic, reviewer, tests, adversarial or full (or 1-5). "
+            "Default: the work item's front matter, else [pipeline] level, else full. See "
+            "advpipe levels.",
+        ),
+    ] = None,
+    security_scan: Annotated[
+        bool | None,
+        typer.Option(
+            "--security-scan/--no-security-scan",
+            help="Run the security scan. Default: the work item's front matter, else "
+            "[pipeline] security_scan, else on at level full only.",
+            show_default=False,
+        ),
+    ] = None,
+    scan_failures: Annotated[
+        str | None,
+        typer.Option(
+            callback=_scan_failures_opt,
+            help="Below level full, what a failing security scan means: ask, ignore or block. "
+            "For now every choice blocks (asking and ignoring come later).",
+        ),
+    ] = None,
 ) -> None:
     """Drive work items through the pipeline, leaving a branch per item for human review."""
     item_file = ""
+    run_level = parse_level(level) if level is not None else None  # checked by _level_opt
+    item_level, item_scan, item_failures = None, None, None
     if sum(x is not None for x in (work_item, item, from_file)) != 1:
         raise typer.BadParameter("give exactly one of WORK_ITEM, --item or --from-file")
     if from_file is not None:
@@ -192,6 +263,9 @@ def run(
         items, item_file = [parsed.body], str(item.resolve())
         # Command-line options win over front matter. Its config path is relative to the repo.
         name = name if name is not None else parsed.name
+        item_level = parse_level(parsed.level) if parsed.level else None
+        item_scan = switch(parsed.security_scan) if parsed.security_scan else None
+        item_failures = parsed.scan_failures
         if config is None and parsed.config is not None:
             config = repo / parsed.config
             if not config.is_file():
@@ -210,7 +284,16 @@ def run(
         raise typer.BadParameter("--detach works with a single work item, not --from-file")
     if run_id is not None and (RunLog.for_run(repo.resolve(), run_id).root / "run.json").exists():
         raise typer.BadParameter(f"run {run_id} already exists")
-    cfg = load_config(config, repo)
+    cfg = _with_run_settings(
+        load_config(config, repo),
+        level=run_level or item_level,
+        security_scan=security_scan if security_scan is not None else item_scan,
+        scan_failures=scan_failures or item_failures,
+    )
+    try:
+        check_available(cfg.pipeline.level)
+    except ValueError as e:
+        raise typer.BadParameter(str(e), param_hint="--level") from e
     if detach:
         _detach(
             repo,
@@ -220,6 +303,9 @@ def run(
             config=config,
             name=name,
             keep_worktree=keep_worktree,
+            level=run_level,
+            security_scan=security_scan,
+            scan_failures=scan_failures,
         )
         return
     _interruptible()
@@ -250,6 +336,25 @@ def run(
         _summary(state, orch.runlog)
     if any(s.status is not Status.COMPLETE for s in states):
         raise typer.Exit(code=1)
+
+
+def _with_run_settings(
+    cfg: Config, *, level: Level | None, security_scan: bool | None, scan_failures: str | None
+) -> Config:
+    """``cfg`` with the level and scan settings from the command line or front matter (the
+    caller has picked whichever wins) in its [pipeline] table, so the run's config.json
+    records what it runs under."""
+    update: dict[str, object] = {}
+    if level is not None:
+        update["level"] = level
+    if security_scan is not None:
+        update["security_scan"] = security_scan
+    if scan_failures is not None:
+        update["scan_failures"] = scan_failures
+    if not update:
+        return cfg
+    pipeline = cfg.pipeline.model_validate({**cfg.pipeline.model_dump(), **update})
+    return cfg.model_copy(update={"pipeline": pipeline})
 
 
 def _stdin_is_tty() -> bool:
@@ -403,7 +508,9 @@ def resume(
     cfg = load_config(config) if config else None
     if detach:
         try:
-            check_resumable(repo, run_id)
+            state = check_resumable(repo, run_id)
+            if cfg is not None:
+                check_same_shape(state, cfg)
         except NotResumable as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2) from e
@@ -506,6 +613,8 @@ def status(
         f"status:   {s.status.value}" + (f" (active, pid {holder})" if holder else ""),
         f"stage:    {s.stage.value}" + (f" round {s.round}" if s.round else ""),
         f"item:     {_short(s.work_item, 100)}",
+        f"level:    {s.level.value} ({level_number(s.level)} of {len(LEVEL_ORDER)}), "
+        f"security scan {'on' if scan_on(s) else 'off'}",
         f"branch:   {s.branch}",
         f"cost:     ${s.cost_usd:.2f}",
         f"done:     {', '.join(s.commits) or '-'}",
@@ -531,6 +640,41 @@ def report(run_id: RunIdArg, repo: RepoOpt = Path(".")) -> None:
         typer.echo(f"no report for run {run_id}", err=True)
         raise typer.Exit(code=2)
     typer.echo(path.read_text(), nl=False)
+
+
+@app.command()
+def levels(repo: RepoOpt = Path("."), config: ConfigOpt = None) -> None:
+    """Show the levels a run can have: what each runs, its agent calls, and what it skips."""
+    cfg = load_config(config, repo)
+    for level in LEVEL_ORDER:
+        info, shape = LEVEL_INFO[level], SHAPES[level]
+        happy, worst = max_agent_calls(level, cfg.limits)
+        agents = len(roles_for(level))
+        marks = []
+        if level is cfg.pipeline.level:
+            marks.append("default")
+        try:
+            check_available(level)
+        except ValueError:
+            marks.append("not available yet")
+        mark = f"  ({', '.join(marks)})" if marks else ""
+        typer.echo(f"{level_number(level)}  {info.label} ({level.value}){mark}")
+        typer.echo(f"   {info.description}")
+        typer.echo(f"   good for: {info.good_for}")
+        typer.echo(
+            f"   {agents} agent{'s' if agents != 1 else ''}: {', '.join(roles_for(level))}; "
+            f"{happy} agent call{'s' if happy != 1 else ''} if all goes well, at most {worst}"
+        )
+        scan = "on" if shape.security_scan else "off"
+        typer.echo(f"   security scan: {scan} by default")
+        dropped = dropped_safeguards(level, shape.security_scan)
+        if dropped:
+            typer.echo("   not done: " + "; ".join(dropped))
+        typer.echo("")
+    typer.echo(
+        "Pick one with: advpipe run --level NAME, 'level:' in a work item's front matter, or "
+        "[pipeline] level in pipeline.toml."
+    )
 
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")

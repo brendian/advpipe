@@ -27,11 +27,13 @@ from advpipe.gates import (
     run_gates,
     tail,
 )
+from advpipe.levels import scan_on
 from advpipe.models import (
     ArbiterRuling,
     AuthorResponse,
     Dispute,
     Finding,
+    Level,
     OpenQuestion,
     Ruling,
     RunState,
@@ -46,7 +48,16 @@ log = logging.getLogger(__name__)
 
 StageKind = Literal["tests", "code"]
 ALL_GATES = ["test", "types", "lint"]
+SCAN_OFF = "turned off for this run"
 M = TypeVar("M", bound=BaseModel)
+
+
+def run_gate_names(state: RunState) -> list[str]:
+    """The checks run for authors and at the final gates. Below full, the security scan runs
+    with them when it's on; at full the review stage runs it, for the security reviewer."""
+    if state.level is not Level.FULL and scan_on(state):
+        return [*ALL_GATES, "security"]
+    return list(ALL_GATES)
 
 
 def _no_progress(message: str) -> None:
@@ -198,9 +209,9 @@ def _fence(text: str, lang: str = "") -> str:
     return f"```{lang}\n{text.rstrip()}\n```"
 
 
-def _gate_commands(config: Config) -> str:
+def _gate_commands(config: Config, names: list[str]) -> str:
     lines = []
-    for name in ALL_GATES:
+    for name in names:
         cmd: list[str] = getattr(config.gates, name)
         if cmd:
             lines.append(f"- {name}: `{' '.join(cmd)}`")
@@ -237,7 +248,8 @@ def author_initial_prompt(ctx: Context, kind: StageKind) -> str:
     paths = ", ".join(ctx.config.paths.tests)
     parts = [
         f"# task.md\n\n{ctx.task_md}",
-        f"# Gate commands (run from repo root)\n\n{_gate_commands(ctx.config)}",
+        f"# Gate commands (run from repo root)\n\n"
+        f"{_gate_commands(ctx.config, run_gate_names(ctx.state))}",
     ]
     if kind == "tests":
         parts.append(f"Write the tests now. Test paths: {paths}. This is round 1.")
@@ -312,8 +324,19 @@ async def stage_gates(ctx: Context, kind: StageKind) -> tuple[list[GateResult], 
         (result,) = await run_gates(ctx.config, ctx.workspace.path, ["test"])
         new_tests = ctx.workspace.changed_files(ctx.spec_commit, ctx.config.paths.tests)
         return [result], red_gate_findings(result, new_tests)
-    results = await run_gates(ctx.config, ctx.workspace.path, ALL_GATES)
+    results = await run_gates(ctx.config, ctx.workspace.path, run_gate_names(ctx.state))
+    note_scanner_skipped(ctx, results)
     return results, gate_findings(results)
+
+
+def note_scanner_skipped(ctx: Context, results: list[GateResult]) -> None:
+    """Say once in the report when the security scan was meant to run but couldn't (below
+    full; at full the review stage says so)."""
+    for r in results:
+        if r.name == "security" and r.skipped:
+            note = f"Security scanner not run ({r.skip_reason})."
+            if note not in ctx.state.notes:
+                ctx.state.notes.append(note)
 
 
 def _is_gate(f: Finding) -> bool:
@@ -516,9 +539,13 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
 
 async def review_stage(ctx: Context) -> StageResult:
     """Standards and security reviewers, in parallel, one pass each."""
-    scanner = await run_gate(
-        "security", ctx.config.gates.security, ctx.workspace.path, ctx.config.limits.gate_timeout_s
-    )
+    command = ctx.config.gates.security
+    if scan_on(ctx.state):
+        scanner = await run_gate(
+            "security", command, ctx.workspace.path, ctx.config.limits.gate_timeout_s
+        )
+    else:
+        scanner = GateResult(name="security", command=command, skipped=True, skip_reason=SCAN_OFF)
     ctx.emit("gates", f"security scanner: {gates_line([scanner])}", gates=gate_statuses([scanner]))
     if scanner.skipped:
         ctx.state.notes.append(

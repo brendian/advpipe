@@ -4,6 +4,7 @@
 ---
 name: s03-stock
 config: pipeline.server.toml
+level: adversarial
 ---
 Add stock level changes with a change history...
 ```
@@ -15,15 +16,25 @@ Only simple ``key: value`` lines are parsed (no YAML). Unknown or repeated keys 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from advpipe.levels import parse_level
 
 FENCE = "---"
 # Front-matter keys and what they set. Command-line options override them.
 KEYS = {
     "name": "branch name: advpipe/<name>",
     "config": "pipeline config file, relative to the repo root",
+    "level": "how much checking: basic, reviewer, tests, adversarial, full (or 1-5)",
+    "security_scan": "run the security scan: yes or no (default: on at level full only)",
+    "scan_failures": "below level full, what a failing security scan means: ask, ignore, block",
 }
+# The keys that set how the run goes (the rest say where it starts from).
+RUN_KEYS = ("level", "security_scan", "scan_failures")
+SWITCH = {"yes": True, "true": True, "no": False, "false": False}
+SCAN_FAILURES = ("ask", "ignore", "block")
 _LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)")
 
 
@@ -31,11 +42,37 @@ class WorkItemError(ValueError):
     pass
 
 
+def switch(value: str) -> bool:
+    """A front-matter yes/no value. Raises ValueError otherwise."""
+    try:
+        return SWITCH[value.strip().lower()]
+    except KeyError:
+        raise ValueError(f"expected yes or no, got {value!r}") from None
+
+
+def _scan_failures(value: str) -> str:
+    if value not in SCAN_FAILURES:
+        raise ValueError(f"expected one of {', '.join(SCAN_FAILURES)}, got {value!r}")
+    return value
+
+
+# Checks for the keys whose values are more than text. Each raises ValueError.
+_CHECKS: dict[str, Callable[[str], object]] = {
+    "level": parse_level,
+    "security_scan": switch,
+    "scan_failures": _scan_failures,
+}
+
+
 @dataclass(frozen=True)
 class WorkItem:
     body: str
     name: str | None = None
     config: str | None = None
+    # As written in the file (checked when parsed): parse_level() and switch() read them.
+    level: str | None = None
+    security_scan: str | None = None
+    scan_failures: str | None = None
 
 
 def parse_work_item(text: str, source: str = "work item") -> WorkItem:
@@ -64,12 +101,17 @@ def parse_work_item(text: str, source: str = "work item") -> WorkItem:
                 raise WorkItemError(f"{source}:{n}: {key!r} is given twice")
             if not value:
                 raise WorkItemError(f"{source}:{n}: {key!r} has no value")
+            if key in _CHECKS:
+                try:
+                    _CHECKS[key](value)
+                except ValueError as e:
+                    raise WorkItemError(f"{source}:{n}: {key!r}: {e}") from None
             fields[key] = value
         body_lines = lines[end + 1 :]
     body = "\n".join(body_lines).strip()
     if not body:
         raise WorkItemError(f"{source}: the work item is empty")
-    return WorkItem(body=body, name=fields.get("name"), config=fields.get("config"))
+    return WorkItem(body=body, **{key: fields.get(key) for key in KEYS})
 
 
 def load_work_item(path: Path) -> WorkItem:

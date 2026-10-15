@@ -14,9 +14,11 @@ from advpipe.budget import Budget, BudgetExceeded
 from advpipe.config import Config
 from advpipe.events import EventKind, emit
 from advpipe.gates import gate_findings, run_gates
+from advpipe.levels import SHAPES, check_available, level_tag, scan_on
 from advpipe.models import (
     RESUMABLE,
     Finding,
+    Level,
     OpenQuestion,
     RunState,
     Stage,
@@ -26,7 +28,6 @@ from advpipe.models import (
 from advpipe.runlog import RunLog, is_this_process, render_report
 from advpipe.runner import AgentRunner, Role
 from advpipe.stages import (
-    ALL_GATES,
     Context,
     StageKind,
     adversarial_stage,
@@ -34,7 +35,9 @@ from advpipe.stages import (
     blocking_open_questions,
     call_agent,
     final_author_pass,
+    note_scanner_skipped,
     review_stage,
+    run_gate_names,
     spec_prompt,
     spec_revision_prompt,
 )
@@ -88,6 +91,25 @@ def _check_answered(repo: Path, runlog: RunLog, state: RunState) -> None:
         )
 
 
+def check_same_shape(state: RunState, config: Config) -> None:
+    """A resumed run keeps its level and security-scan setting. Raises NotResumable if
+    ``config`` explicitly sets either to something else."""
+    pipeline = config.pipeline
+    asked = pipeline.model_fields_set
+    if "level" in asked and pipeline.level is not state.level:
+        raise NotResumable(
+            f"run {state.run_id} is at level {state.level.value}; a resumed run keeps its "
+            "level. Start a new run to change it"
+        )
+    scan = pipeline.security_scan
+    if "security_scan" in asked and scan is not None and scan != scan_on(state):
+        now = "on" if scan_on(state) else "off"
+        raise NotResumable(
+            f"run {state.run_id} has the security scan {now}; a resumed run keeps that. "
+            "Start a new run to change it"
+        )
+
+
 def new_run_id() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
 
@@ -120,12 +142,7 @@ class Orchestrator:
         self.runner = runner
         self.repo = repo.resolve()
         self.keep_worktree = keep_worktree
-        self.state = state or RunState(
-            run_id=run_id or new_run_id(),
-            work_item=work_item,
-            work_item_file=work_item_file,
-            repo=str(self.repo),
-        )
+        self.state = state or self._new_state(run_id, work_item, work_item_file)
         self.run_id = self.state.run_id
         self.runlog = RunLog.for_run(self.repo, self.run_id)
         self.budget = Budget(
@@ -137,6 +154,30 @@ class Orchestrator:
         self.ctx: Context | None = None
         self.progress: Callable[[str], None] = progress or (lambda message: None)
         self.name = name
+
+    def _new_state(self, run_id: str | None, work_item: str, work_item_file: str) -> RunState:
+        """A new run's state. Its level and scan setting come from the effective config
+        (command line, front matter and pipeline.toml already merged) and never change."""
+        pipeline = self.config.pipeline
+        check_available(pipeline.level)
+        state = RunState(
+            run_id=run_id or new_run_id(),
+            work_item=work_item,
+            work_item_file=work_item_file,
+            repo=str(self.repo),
+            level=pipeline.level,
+            security_scan=pipeline.security_scan,
+            scan_policy=pipeline.scan_failures,
+        )
+        state.security_scan = scan_on(state)  # the level's default, when not set
+        if state.scan_policy != "block" and state.level is not Level.FULL and state.security_scan:
+            # Asking (and ignoring hits) comes with decision points (LEVELS_PLAN.md L3).
+            state.notes.append(
+                f"Security scan policy {state.scan_policy!r} isn't available yet; scan "
+                "failures block the run, like a failing test."
+            )
+            state.scan_policy = "block"
+        return state
 
     @classmethod
     def resume(
@@ -153,8 +194,21 @@ class Orchestrator:
     ) -> Orchestrator:
         """Reload an interrupted run from run.json. Uses the run's saved config by default."""
         state = check_resumable(repo, run_id, locked_for_me=locked_for_me)
+        if config is not None:
+            check_same_shape(state, config)
         runlog = RunLog.for_run(repo.resolve(), run_id)
         cfg = config or runlog.read_config() or Config()
+        # config.json says what the run runs under, so it mustn't contradict the run's own
+        # level and scan setting (e.g. a run whose config.json predates levels).
+        pipeline = cfg.pipeline
+        scan = pipeline.security_scan
+        if scan is None:
+            scan = SHAPES[pipeline.level].security_scan
+        if pipeline.level is not state.level or scan != scan_on(state):
+            pipeline = pipeline.model_copy(
+                update={"level": state.level, "security_scan": scan_on(state)}
+            )
+            cfg = cfg.model_copy(update={"pipeline": pipeline})
         if budget_usd is not None:
             limits = cfg.limits.model_copy(update={"budget_usd_per_task": budget_usd})
             cfg = cfg.model_copy(update={"limits": limits})
@@ -229,7 +283,12 @@ class Orchestrator:
     def _open_workspace(self) -> Workspace:
         if self.state.branch:
             self.state.notes.append(f"Resumed at stage {self.state.stage.value}")
-            self._emit("run_start", f"resuming run {self.run_id} at stage {self.state.stage.value}")
+            self._emit(
+                "run_start",
+                f"resuming run {self.run_id} at stage {self.state.stage.value}",
+                level=self.state.level.value,
+                security_scan=scan_on(self.state),
+            )
             self.state.status = Status.RUNNING
             self.state.open_findings = []
             # What it runs under from now on, e.g. after `resume --budget`, so the UI and a
@@ -242,7 +301,15 @@ class Orchestrator:
         self.state.worktree = str(ws.path)
         self.state.branch = ws.branch
         self.state.base_commit = ws.head()
-        self._emit("run_start", f"run {self.run_id} started; branch {ws.branch}", branch=ws.branch)
+        tag = level_tag(self.state)
+        at = f" at level {tag}" if tag else ""
+        self._emit(
+            "run_start",
+            f"run {self.run_id} started{at}; branch {ws.branch}",
+            branch=ws.branch,
+            level=self.state.level.value,
+            security_scan=scan_on(self.state),
+        )
         self._emit("run_start", f"worktree: {ws.path}", worktree=str(ws.path))
         return ws
 
@@ -259,6 +326,7 @@ class Orchestrator:
             progress=self.progress,
         )
         done = self.state.commits
+        shape = SHAPES[self.state.level]
 
         if "spec" in done:
             ctx.task_md = (ws.path / "task.md").read_text()
@@ -279,17 +347,18 @@ class Orchestrator:
                 return
             done["code"] = ws.commit("advpipe: implementation")
 
-        if "review" not in done:
+        if shape.review == "full" and "review" not in done:
             self._enter(Stage.REVIEW)
             if not ctx.last_gates:  # resumed: reviewers still need current gate output
-                ctx.last_gates = await run_gates(self.config, ws.path, ALL_GATES)
+                ctx.last_gates = await run_gates(self.config, ws.path, run_gate_names(self.state))
             if not await self._settle(await review_stage(ctx), Role.CODER, "code"):
                 return
             changed = ws.changed_files(ws.head())
             done["review"] = ws.commit("advpipe: review fixes") if changed else ws.head()
 
         self._enter(Stage.FINAL_GATES)
-        gates = await run_gates(self.config, ws.path, ALL_GATES)
+        gates = await run_gates(self.config, ws.path, run_gate_names(self.state))
+        note_scanner_skipped(ctx, gates)
         self.runlog.write_json("final-gates.json", gates)
         failed = gate_findings(gates)
         if failed:

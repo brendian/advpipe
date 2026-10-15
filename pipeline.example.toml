@@ -10,6 +10,7 @@ max_rounds_code = 3
 max_turns_per_agent = 40
 budget_usd_per_task = 15.0
 gate_timeout_s = 600
+max_fix_passes = 3      # extra fix passes a person can ask for when checks stay red
 
 [gates]
 # Commands run from the worktree root. Empty list = gate skipped.
@@ -21,3 +22,8 @@ security = ["semgrep", "--error", "--config", "auto"]   # optional; skipped if n
 [paths]
 tests = ["tests/"]           # coder may not modify these
 standards_doc = "CLAUDE.md"  # given to the standards reviewer
+
+[pipeline]
+level = "full"            # basic | reviewer | tests | adversarial | full (or 1-5)
+# security_scan = true    # leave out to use the level's default (on at full only)
+scan_failures = "ask"     # below full, what a failing scan means: ask | ignore | block

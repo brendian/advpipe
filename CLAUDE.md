@@ -28,6 +28,9 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev,ui]'   # or: uv sync --a
 - `docs/UI_PLAN.md`: plan for the optional local web UI, in milestones (U0–U6), one per session.
 - `docs/ANSWERS_PLAN.md`: plan for answering a spec's blocking questions and resuming the same
   run, in milestones (A0–A2), one per session.
+- `docs/LEVELS_PLAN.md`: plan for pipeline levels (Basic, one agent, up to Full), the UI
+  slider, Bypass for blocking questions, decision points (fix/take over, scan hits, usage
+  limits) and subscription usage next to the budget, in milestones (L0–L6), one per session.
 - `scripts/ui_screenshots.py`: remakes `docs/screenshots/` (README) from a fake-agent demo repo.
 
 ## Design rules (do not drop these)
@@ -39,6 +42,9 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev,ui]'   # or: uv sync --a
 5. **Every loop is bounded:** round caps, max turns per agent, and a dollar budget per task.
 6. **Critics may return PASS.** Findings must cite file + line or an acceptance criterion.
 7. **Ground truth beats opinion.** A failed gate is automatically a blocking finding.
+
+Rules 2, 4 and 6 apply at the levels that have the agents they govern (`docs/LEVELS_PLAN.md`);
+the default level, `full`, applies all of them.
 
 Never push, merge, or open PRs from the pipeline. Default models: authors and arbiter on
 `claude-opus-5-5`, critics and reviewers on `claude-sonnet-5-5`.

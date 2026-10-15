@@ -5,7 +5,9 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt, field_validator
+
+from advpipe.models import Level, ScanPolicy
 
 
 class _Strict(BaseModel):
@@ -29,6 +31,8 @@ class Limits(_Strict):
     max_turns_per_agent: PositiveInt = 40
     budget_usd_per_task: PositiveFloat = 15.0
     gate_timeout_s: PositiveInt = 600
+    # Extra fix passes a person can ask for in one run, when checks stay red.
+    max_fix_passes: PositiveInt = 3
 
 
 class Gates(_Strict):
@@ -45,11 +49,30 @@ class Paths(_Strict):
     standards_doc: str = "CLAUDE.md"
 
 
+class Pipeline(_Strict):
+    """Which level runs start at, and the security-scan switch (docs/LEVELS_PLAN.md).
+    Work-item front matter and command-line options override these."""
+
+    level: Level = Level.FULL
+    security_scan: bool | None = None  # None: the level's default (on at full only)
+    scan_failures: ScanPolicy = "ask"  # what a failing scan means below full
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _level_name_or_number(cls, value: object) -> object:
+        from advpipe.levels import parse_level  # levels imports runner, which imports us
+
+        if isinstance(value, str | int) and not isinstance(value, bool):
+            return parse_level(value)
+        return value
+
+
 class Config(_Strict):
     models: Models = Field(default_factory=Models)
     limits: Limits = Field(default_factory=Limits)
     gates: Gates = Field(default_factory=Gates)
     paths: Paths = Field(default_factory=Paths)
+    pipeline: Pipeline = Field(default_factory=Pipeline)
 
 
 def load_config(path: Path | None = None, repo: Path | None = None) -> Config:

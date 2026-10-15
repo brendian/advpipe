@@ -5,6 +5,7 @@ each part, and why it's built that way. For installing and using the tool, see t
 [README](../README.md).
 
 - [The big picture](#the-big-picture)
+- [Levels](#levels)
 - [Module map](#module-map)
 - [A run, step by step](#a-run-step-by-step)
 - [The adversarial loop in detail](#the-adversarial-loop-in-detail)
@@ -70,17 +71,84 @@ Seven rules shape everything below:
 7. **Ground truth beats opinion.** A failing test or type check is a blocking finding, and no
    agent can argue it away.
 
+## Levels
+
+Every run has a **level** (`RunState.level`), picked by a person and fixed for the whole run
+(plan: [LEVELS_PLAN.md](LEVELS_PLAN.md)). A level is a name for a **shape**, a few switches the
+orchestrator reads (`levels.SHAPES`):
+
+| # | Level | `solo` | `critics` | `review` | `arbiter` | scan by default | Steps |
+|---|---|---|---|---|---|---|---|
+| 1 | `basic` | yes | no | none | no | off | SOLO → FINAL CHECKS |
+| 2 | `reviewer` | yes | no | single | no | off | SOLO → REVIEW → FINAL CHECKS |
+| 3 | `tests` | no | no | single | no | off | SPEC → TESTS → CODE → REVIEW → FINAL CHECKS |
+| 4 | `adversarial` | no | yes | none | yes | off | SPEC → TESTS ⇄ → CODE ⇄ → ARBITER → FINAL CHECKS |
+| 5 | `full` | no | yes | full | yes | on | the pipeline above |
+
+**Built so far: `adversarial` and `full`.** `basic`, `reviewer` and `tests` are accepted in
+config and front matter but refused when a run starts (`levels.check_available`, called by
+`advpipe run` and `Orchestrator._new_state`). Everything else said about a level (its roles,
+steps, the safeguards it drops, its agent-call bounds, its label) is derived from `SHAPES` in
+`levels.py`, so the CLI, the report and later the UI can't drift apart:
+
+- `parse_level` (a name or 1-5), `level_number`, `LEVEL_ORDER`, `LEVEL_INFO`.
+- `roles_for(level)`: the roles a run can call, as `Role` values (`"solo"` for levels 1 and 2:
+  `Role.SOLO` arrives with the solo stage).
+- `steps_for(level)`: the timeline steps (`Stage.SOLO` already exists for this).
+- `dropped_safeguards(level, scan)`: plain-language lines for the report and `advpipe levels`;
+  empty for `full` with the scan on.
+- `max_agent_calls(level, limits)`: (happy path, worst case) agent calls between two person
+  decisions. Full: 7 and 30 with the default caps; Adversarial: 5 and 23. The worst case counts
+  one JSON retry per critic, reviewer and arbiter call, the test-fix pass, and the arbiter and
+  final author pass after each stage's cap. `tests/test_levels.py` runs a script that fails as
+  late as it can at every stage and checks the count matches, so the formula can't drift.
+- `level_tag(state)`: `"adversarial"`, `"full, no scan"`, ... for the summary line and the
+  `run_start` message; empty for `full` with the scan on, so those read as they always have.
+
+**Where it comes from** (highest first): `advpipe run --level` → the work item's `level:` →
+`[pipeline] level` → `full`. The CLI merges the first two into the config's `[pipeline]` table
+(`cli._with_run_settings`), so the run's `config.json` records them, and
+`Orchestrator._new_state` copies them into `RunState` once. No agent output is ever read for
+them. Runs recorded before levels existed have no `level` in `run.json` and load as `full`.
+
+**The security scan** is a switch of its own: `RunState.security_scan`, from
+`--security-scan/--no-security-scan` → front matter `security_scan:` → `[pipeline]
+security_scan` → the level's default (`Shape.security_scan`: on at `full` only). `scan_on(state)`
+reads it (None, in an old run, means the level's default). At `full` the review stage runs the
+scanner for the security reviewer, as before; with the scan off it's skipped there ("turned off
+for this run") and the security reviewer works from the diff alone. Below `full`, with the scan
+on, `stages.run_gate_names(state)` adds `security` to the checks run after every code round,
+after final passes and at the final gates, and to the gate commands the coder is given. A
+failure is then an ordinary gate finding, so it blocks like a failing test
+(`RunState.scan_policy = "block"`). The policies `ask` and `ignore` are accepted but fall back
+to `block` with a note until decision points exist. An uninstalled scanner is skipped at every
+level, and the report says so once (`note_scanner_skipped`).
+
+**Design rules by level.** Rules 2, 4 and 6 apply at the levels that have the agents they
+govern; the default level, `full`, applies all of them:
+
+| Rule | Basic | Reviewer | Tests | Adversarial | Full |
+|---|---|---|---|---|---|
+| 1. Orchestrator is code | ✔ | ✔ | ✔ | ✔ | ✔ |
+| 2. Tests before code (test author sees `task.md` only) | ✘ one agent | ✘ one agent | ✔ | ✔ | ✔ |
+| 3. One writer at a time; reviewers read-only | ✔ (one writer) | ✔ | ✔ | ✔ | ✔ |
+| 4. Critics get artifacts, not reasoning | n/a | ✔ | ✔ | ✔ | ✔ |
+| 5. Every loop bounded | ✔ | ✔ | ✔ | ✔ | ✔ |
+| 6. Critics may PASS; grounded findings | n/a | ✔ | ✔ | ✔ | ✔ |
+| 7. Failed gate = blocking finding | ✔ | ✔ | ✔ | ✔ | ✔ |
+
 ## Module map
 
 All code is in `src/advpipe/`.
 
 | File | Responsibility | Key names |
 |---|---|---|
-| `cli.py` | Typer CLI: `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` | `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `ui`, `gates` |
+| `cli.py` | Typer CLI: `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `levels`, `ui`, `gates` | `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `levels`, `ui`, `gates` |
+| `levels.py` | Pipeline levels as data: what each level runs, and everything derived from that | `SHAPES`, `Shape`, `parse_level`, `roles_for`, `steps_for`, `dropped_safeguards`, `max_agent_calls`, `scan_on`, `level_tag` |
 | `answers.py` | Blocking spec questions and their answers: waiting/ready checks, recording answers, answers files, the Answers section of `task.md` | `record_answers`, `awaiting_answers`, `answers_ready`, `with_answers_section`, `parse_answers_file`, `migrate` |
-| `orchestrator.py` | The state machine; resume; parallel runs | `Orchestrator`, `Orchestrator._run`, `Orchestrator._settle`, `Orchestrator.resume`, `run_many` |
-| `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `test_file_guard`, `Context` |
-| `models.py` | Pydantic data contracts and validation rules | `Finding`, `Verdict`, `AuthorResponse`, `ArbiterRuling`, `RunState`, `Stage`, `Status` |
+| `orchestrator.py` | The state machine; resume; parallel runs | `Orchestrator`, `Orchestrator._run`, `Orchestrator._settle`, `Orchestrator.resume`, `check_same_shape`, `run_many` |
+| `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `test_file_guard`, `run_gate_names`, `Context` |
+| `models.py` | Pydantic data contracts and validation rules | `Finding`, `Verdict`, `AuthorResponse`, `ArbiterRuling`, `RunState`, `Stage`, `Status`, `Level` |
 | `runner.py` | The agent abstraction and the Claude Agent SDK implementation; role → tools/model table | `AgentRunner`, `SdkAgentRunner`, `Role`, `ROLE_TOOLS`, `ROLE_MODEL`, `build_request` |
 | `gates.py` | Runs check commands; turns failures into findings | `run_gates`, `gate_findings`, `red_gate_findings`, `GateResult` |
 | `workspace.py` | Git worktree per run; diffs; reverting files | `Workspace.create`, `.reopen`, `.remove`, `.diff`, `.changed_files`, `.restore` |
@@ -120,6 +188,9 @@ A new run calls `Workspace.create`. That makes a git worktree at
 `<repo>/.advpipe/worktrees/<run-id>` on a new, human-readable branch (see
 [isolation](#isolation-worktrees-and-branches)), starting from the
 repo's current `HEAD`. It also saves the effective config to `config.json` in the run directory.
+The run's level and security-scan setting were fixed when its `RunState` was made
+(`_new_state`); the `run_start` event carries both (`level`, `security_scan`), and its message
+names the level unless it's `full` with the scan on.
 A resumed run calls `Workspace.reopen` instead (see [resume](#persistence-resume-and-locking)).
 
 ### 1. Spec (`Orchestrator._spec`)
@@ -187,8 +258,12 @@ types and lint to be green. The test-file guard runs after every coder pass. The
 a commit (`state.commits["code"]`).
 
 ### 4. Review (`review_stage`)
-- Runs the security scanner gate (semgrep by default). It's optional: if the tool isn't
-  installed, the gate is skipped and the report says so.
+Only at levels whose shape has `review == "full"` (today: `full`). At `adversarial` the run goes
+from the code stage straight to the final gates, and the report lists "No standards review" and
+"No security review" under *Not done at this level*.
+
+- Runs the security scanner gate (semgrep by default), unless the run's security scan is off.
+  It's optional: if the tool isn't installed, the gate is skipped and the report says so.
 - Calls **standards-reviewer** and **security-reviewer** at the same time with
   `asyncio.gather`. Both get `task.md`, the full diff since the base commit, and gate output.
   The standards reviewer also gets the repo's standards doc (`CLAUDE.md` by default). The
@@ -213,7 +288,8 @@ returns. Otherwise:
 3. If gates still fail, the run stops with `needs_human` and those failures as open findings.
 
 ### 6. Final gates
-All gates run one last time on the finished branch. Green means `complete`, and the worktree
+All gates (`run_gate_names`: plus the security scan below `full` when it's on) run one last
+time on the finished branch. Green means `complete`, and the worktree
 is removed (the branch stays). Red means `needs_human`.
 
 ## The adversarial loop in detail
@@ -375,7 +451,9 @@ It returns the final text plus `total_cost_usd` from the SDK's `ResultMessage`.
 run.json        RunState, rewritten at every transition and after every agent call
 events.jsonl    every progress event, one JSON object per line (see below)
 console.log     stdout and stderr of a run started with --detach
-config.json     the config this run runs under (rewritten on resume, e.g. after --budget)
+config.json     the config this run runs under (rewritten on resume, e.g. after --budget); its
+                [pipeline] table has the level and scan setting from the command line and
+                front matter
 task.md         copy of the spec (the latest pass, with the Answers section)
 spec/author.txt the spec writer's reply (first pass)
 spec/pass-N/{task.md, author.txt, answers.json}   each spec pass's task.md; for passes N ≥ 2
@@ -401,6 +479,9 @@ run.lock        present only while a process is driving the run
    `_open_workspace` writes the config back to `config.json`, so a raised budget sticks: the
    UI shows it, and a later resume uses it.
 3. Restores the budget's spent amount and per-stage totals from `run.json`.
+4. Keeps the run's level and security-scan setting: `check_same_shape` refuses a `--config`
+   whose `[pipeline]` explicitly sets a different level or scan, and the config used (and
+   written back to `config.json`) gets the run's own values.
 
 `_run` then calls `Workspace.reopen`:
 - if the worktree exists: `git reset --hard` and `git clean -fd`, which throws away the
@@ -447,7 +528,7 @@ Extra fields by kind:
 
 | `kind` | When | Extra fields |
 |---|---|---|
-| `run_start` | new run (branch, worktree) or resume | `branch` or `worktree` (new runs) |
+| `run_start` | new run (branch, worktree) or resume | `branch` or `worktree` (new runs); `level` and `security_scan` (the branch line and resumes) |
 | `stage` | `== STAGE`, and a stage passing or going to the arbiter | `passed` (for the latter) |
 | `round` | start of an author/critic round, or of a spec revision pass | `cap` |
 | `agent_start` / `agent_done` | around every agent call | `role`; `agent_done` adds `cost_usd`, `total_usd`, `is_error` |
@@ -510,8 +591,9 @@ adds a "Cleaned up" note to `run.json` and `report.md`.
 ## Work-item files
 
 `advpipe run --item FILE` reads the task from a file (`workitem.load_work_item`). An optional
-front-matter block (a first line of `---`, `key: value` lines, a closing `---`) sets `name` and
-`config`. It's parsed by hand, so there's no YAML dependency, and it's strict: unknown keys,
+front-matter block (a first line of `---`, `key: value` lines, a closing `---`) sets `name`,
+`config`, and the run settings `level`, `security_scan` (yes/no) and `scan_failures`
+(`RUN_KEYS`), whose values are checked as the file is read (an error names the file and line). It's parsed by hand, so there's no YAML dependency, and it's strict: unknown keys,
 repeated keys, empty values, malformed lines, a missing closing `---` and an empty body are
 all errors, reported with file and line. Command-line options override front matter, and a
 front-matter `config` is relative to the repo root. The body (without front matter) becomes
@@ -520,7 +602,8 @@ front-matter `config` is relative to the repo root. The body (without front matt
 `KEYS` order, then the body and one newline); `parse_work_item` reads it back as an equal
 `WorkItem`. A body whose first line is `---` gets an empty front-matter block, so it isn't
 mistaken for one. `salvage_work_item` pulls what it can out of a file that doesn't parse, so
-the UI's editor can open it to fix it.
+the UI's editor can open it to fix it. The editor has no fields for the run settings yet, so
+`ui.items.save_item` keeps the file's values for them.
 
 ## Parallel runs
 
@@ -753,6 +836,12 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   and its refusals, resume after answers (the revision prompt, the Answers section in the
   committed `task.md`, what later agents see), new questions in a revision, the spec-pass cap,
   re-asked questions, interrupted and over-budget revisions, old-format runs, answers files.
+- `test_levels.py`: levels as data (shapes, roles, steps, dropped safeguards, parsing, agent
+  calls, including the worst case against a run that fails as late as it can at `full` and
+  `adversarial`); `[pipeline]` config and front matter; precedence from the command line down
+  to the level default; the scan toggle at `full` and below; old runs; resume keeping the level
+  and refusing a config that changes it; an `adversarial` run end to end; the summary line,
+  `status` and `advpipe levels`.
 - `test_answers_cli.py`: `advpipe answer` with `--answer`, `--file`/`--template`, prompting,
   `--no-resume`, `--detach` (through the fake child), refusals and exit codes; what `resume`,
   `status` and the run summary say while a run waits on answers.
@@ -796,7 +885,8 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
 - **Change agent behaviour:** edit `src/advpipe/prompts/<role>.md`, then copy the body into
   `.claude/agents/<role>.md`. The sync test makes sure you don't forget.
 - **Add a gate:** add a field to `Gates` in `config.py` and include its name where it should run
-  (`ALL_GATES` in `stages.py` for the code stage and final gates).
+  (`ALL_GATES` in `stages.py` for the code stage and final gates; `run_gate_names` builds each
+  run's list from it).
 - **Use a different agent backend:** implement `AgentRunner.run` and pass your runner to
   `Orchestrator`. Nothing else depends on the SDK.
 - **Change the pipeline itself:** `Orchestrator._run` is short and linear. Add or reorder

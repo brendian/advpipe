@@ -13,7 +13,8 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from advpipe.config import Config
-from advpipe.models import Finding, RunState
+from advpipe.levels import LEVEL_ORDER, dropped_safeguards, level_number, roles_for, scan_on
+from advpipe.models import Finding, Level, RunState
 
 EVENTS_FILE = "events.jsonl"
 # Run ids are path components: letters, digits, '.', '_' and '-', not starting with '.' or '-'.
@@ -201,6 +202,20 @@ def _questions(state: RunState, waiting: bool) -> list[str]:
     return [*lines, ""]
 
 
+def _level(state: RunState) -> list[str]:
+    """The run's level and what it leaves out. Just the name for full with the scan on."""
+    scan = scan_on(state)
+    if state.level is Level.FULL and scan:
+        return [f"- **Level:** {state.level.value}"]
+    agents = len(roles_for(state.level))
+    lines = [
+        f"- **Level:** {state.level.value} ({level_number(state.level)} of {len(LEVEL_ORDER)}): "
+        f"{agents} agent{'s' if agents != 1 else ''} · security scan {'on' if scan else 'off'}",
+        "- **Not done at this level:**",
+    ]
+    return lines + [f"  - {line}" for line in dropped_safeguards(state.level, scan)]
+
+
 def render_report(state: RunState, *, waiting_on_answers: bool = False) -> str:
     """report.md. ``waiting_on_answers``: the run stopped on blocking questions a person can
     answer (answers.awaiting_answers), so the report says how."""
@@ -215,6 +230,7 @@ def render_report(state: RunState, *, waiting_on_answers: bool = False) -> str:
         f"# advpipe run {state.run_id}",
         "",
         f"- **Status:** {state.status.value}",
+        *_level(state),
         f"- **Work item:** {state.work_item}",
         f"- **Branch:** `{state.branch}`"
         + (

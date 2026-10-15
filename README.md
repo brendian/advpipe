@@ -97,6 +97,44 @@ Some rules the tool enforces in code, not just by asking the agents nicely:
 
 Want the details? See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+### Levels: how much checking a run gets
+
+Every run has a **level**. The default, **Full**, is the pipeline above. Lower levels drop
+agents (never checks: tests, types and lint must pass at every level) to spend less on smaller
+changes:
+
+| # | Level | Steps | Agents | Good for |
+|---|---|---|---|---|
+| 1 | **Basic** | one agent writes task.md, tests and code → final checks | 1 | typos, renames, a one-line fix |
+| 2 | **Reviewer** | Basic, then one review by a second agent | 2 | small bug fixes you'll skim |
+| 3 | **Tests** | spec → tests (shown to fail) → code → one review → final checks | 4 | a contained change with clear behaviour |
+| 4 | **Adversarial** | spec → tests ⇄ critic → code ⇄ critic → arbiter → final checks | 6 | a feature with real logic |
+| 5 | **Full** | everything above, plus the standards and security reviewers and the security scan | 8 | risky, security-relevant or user-facing work |
+
+**Today only Adversarial and Full can be run**; Basic, Reviewer and Tests are planned
+([docs/LEVELS_PLAN.md](docs/LEVELS_PLAN.md)) and are refused at the start of a run with
+"level X isn't available yet". `advpipe levels` prints this table for your config, with the
+number of agent calls each level makes. Pick a level with `--level`, `level:` in a work item's
+front matter, or `[pipeline] level` in `pipeline.toml` (in that order of precedence).
+
+The **security scan** (semgrep by default) is its own switch: on by default at Full only. Turn
+it on or off for a run with `--security-scan` / `--no-security-scan` (or `security_scan:` in
+front matter, or `[pipeline] security_scan`). Below Full there's no security reviewer to triage
+its hits, so a failing scan counts like a failing test: the coder gets the hits and must clear
+them.
+
+Which of the design rules each level keeps:
+
+| Rule | Basic | Reviewer | Tests | Adversarial | Full |
+|---|---|---|---|---|---|
+| 1. Orchestrator is code | ✔ | ✔ | ✔ | ✔ | ✔ |
+| 2. Tests before code (test author sees `task.md` only) | ✘ one agent | ✘ one agent | ✔ | ✔ | ✔ |
+| 3. One writer at a time; reviewers read-only | ✔ (one writer) | ✔ | ✔ | ✔ | ✔ |
+| 4. Critics get artifacts, not reasoning | n/a | ✔ | ✔ | ✔ | ✔ |
+| 5. Every loop bounded | ✔ | ✔ | ✔ | ✔ | ✔ |
+| 6. Critics may PASS; grounded findings | n/a | ✔ | ✔ | ✔ | ✔ |
+| 7. Failed gate = blocking finding | ✔ | ✔ | ✔ | ✔ | ✔ |
+
 ## Requirements
 
 - **Python 3.11 or newer**
@@ -412,7 +450,7 @@ Run one or more tasks.
 
 ```sh
 advpipe run "task description" [--repo PATH] [--config FILE] [--name NAME] [--keep-worktree]
-advpipe run --item work-items/s03-stock.md [--repo PATH] [--detach]
+advpipe run --item work-items/s03-stock.md [--repo PATH] [--detach] [--level adversarial]
 advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
 ```
 
@@ -428,6 +466,15 @@ advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
 - `--name NAME`: name the branch `advpipe/NAME`. By default the name comes from the task's first
   line, with filler words dropped and cut to 40 characters (`advpipe/fix-refund-rounding-bug`).
   If that branch already exists, `-2`, `-3`, ... is appended.
+- `--level LEVEL`: how much checking, by name or number: `basic` (1), `reviewer` (2), `tests`
+  (3), `adversarial` (4) or `full` (5). See [levels](#levels-how-much-checking-a-run-gets).
+  Default: the work item's front matter, else `[pipeline] level`, else `full`. Only
+  `adversarial` and `full` can be run so far.
+- `--security-scan` / `--no-security-scan`: run the security scan or not. Default: the work
+  item's front matter, else `[pipeline] security_scan`, else on at `full` only.
+- `--scan-failures ask|ignore|block`: below `full`, what a failing security scan means. For
+  now every choice blocks (the hits go to the coder like a failing test); asking you, and
+  ignoring hits, come later. A run started with `ask` or `ignore` notes that in its report.
 - `--keep-worktree`: don't delete the working copy after a successful run.
 - `--quiet` / `-q`: don't print live progress.
 - `--detach`: run in the background. advpipe prints the run id and returns at once; the run
@@ -441,7 +488,9 @@ While it runs, advpipe prints timestamped progress to stderr: each stage, each a
 and finishing (with its cost and the run total so far), check results, critic verdicts and
 arbiter rulings. With several tasks, each line is prefixed with `[item N]`. When the run
 finishes, a one-line summary per task goes to stdout, so `advpipe run ... > result.txt` captures
-just the summary. The same progress is also written, one JSON object per line, to
+just the summary. Below `full`, or with the scan not at its level's default, the line ends with
+the level, e.g. `[adversarial]` or `[full, no scan]`; a `full` run with the scan reads as it
+always has. The same progress is also written, one JSON object per line, to
 `.advpipe/runs/<run-id>/events.jsonl` (see [the run directory](docs/ARCHITECTURE.md#persistence-resume-and-locking)).
 
 Exit code: 0 if every task completed, 1 otherwise, 130 if it was interrupted (Ctrl-C or
@@ -456,15 +505,19 @@ top sets defaults for that task:
 ---
 name: s03-stock
 config: pipeline.server.toml
+level: adversarial
 ---
 Add stock level changes with a change history...
 ```
 
 - `name`: the branch name, as with `--name` (here `advpipe/s03-stock`).
 - `config`: the config file, relative to the repo root, as with `--config`.
+- `level`: as with `--level` (a name or 1-5).
+- `security_scan`: `yes` or `no`, as with `--security-scan` / `--no-security-scan`.
+- `scan_failures`: `ask`, `ignore` or `block`, as with `--scan-failures`.
 
-Only these two keys are allowed, one `key: value` per line; anything else is an error, so typos
-don't go unnoticed. Options on the command line win over front matter. A file with no text after
+Only these keys are allowed, one `key: value` per line; anything else (or a value that isn't
+one of the allowed ones) is an error, with the file and line, so typos don't go unnoticed. Options on the command line win over front matter. A file with no text after
 the front matter is rejected. The run remembers which file it came from (`work_item_file` in
 `run.json`).
 
@@ -475,7 +528,8 @@ advpipe status [--repo PATH]             # list all runs
 advpipe status <run-id> [--repo PATH]    # details of one run
 ```
 
-Shows status, current stage and round, cost so far, and which stages are finished. You can run
+Shows status, current stage and round, level and security scan, cost so far, and which
+stages are finished. You can run
 it in a second terminal while a run is going; `run.json` is updated after every agent call.
 
 ### `advpipe report`
@@ -542,6 +596,8 @@ be resumed, except a run whose spec stopped on blocking questions: answer them w
 [`advpipe answer`](#advpipe-answer), which resumes it for you (or answer with `--no-resume`,
 then `advpipe resume`). `--detach` resumes in the background, as with
 `advpipe run --detach`: it checks the run can be resumed, prints the run id and returns.
+A resumed run keeps its level and security-scan setting; a `--config` whose `[pipeline]` sets
+different ones is refused.
 
 ### `advpipe cancel`
 
@@ -603,6 +659,17 @@ advpipe gates [--repo PATH] [--only test,types,lint,security]
 Runs your configured checks once and prints the results. It exits with code 2 if any fail.
 Handy on its own, and used by the [optional hook](#run-your-checks-after-every-edit-optional-hook).
 
+### `advpipe levels`
+
+```sh
+advpipe levels [--repo PATH] [--config FILE]
+```
+
+Prints the five [levels](#levels-how-much-checking-a-run-gets): what each runs, its agents, how
+many agent calls it makes if all goes well and at most (with your config's round caps), whether
+the security scan is on by default, and what it leaves out compared with `full`. It marks your
+config's default level and the levels that can't be run yet. Read-only; no API calls.
+
 ## Configuration
 
 Put a `pipeline.toml` in your project root. Every setting is optional; the defaults are shown.
@@ -621,6 +688,7 @@ max_rounds_code     = 3      # coder ⇄ critic rounds
 max_turns_per_agent = 40     # steps a single agent may take
 budget_usd_per_task = 15.0   # hard stop for the whole run
 gate_timeout_s      = 600    # max seconds per check command
+max_fix_passes      = 3      # extra fix passes you can ask for when checks stay red (planned)
 
 [gates]
 # Commands run from the project root. [] = skip this check.
@@ -632,6 +700,11 @@ security = ["semgrep", "--error", "--config", "auto"]   # skipped if not install
 [paths]
 tests         = ["tests/"]   # files the coder is not allowed to change
 standards_doc = "CLAUDE.md"  # your coding conventions, given to the standards reviewer
+
+[pipeline]
+level         = "full"       # basic | reviewer | tests | adversarial | full (or 1-5)
+# security_scan = true       # leave out to use the level's default (on at full only)
+scan_failures = "ask"        # below full, what a failing scan means: ask | ignore | block
 ```
 
 **Tips:**
@@ -648,8 +721,9 @@ standards_doc = "CLAUDE.md"  # your coding conventions, given to the standards r
 
 ## What it costs
 
-You pay for the Claude API usage of every agent call. A run makes **at least 7 agent calls**
-(spec, test author, test critic, coder, code critic, two reviewers). Each extra round adds two
+You pay for the Claude API usage of every agent call. A `full` run makes **at least 7 agent
+calls** (spec, test author, test critic, coder, code critic, two reviewers); an `adversarial`
+run at least 5 (no reviewers). `advpipe levels` shows the minimum and maximum per level. Each extra round adds two
 more, and the arbiter adds one or two.
 
 As a reference point, the [worked example](#a-worked-example) (a small, well-defined function,
@@ -782,8 +856,15 @@ Run `advpipe resume <run-id>`.
 **A run started with `--detach` seems stuck**: look at `.advpipe/runs/<run-id>/console.log`
 and `advpipe status <run-id>`.
 
-**`unknown key '...' (known keys: name, config)`**: a work-item file's front matter may only
-set `name` and `config`.
+**`unknown key '...' (known keys: name, config, level, security_scan, scan_failures)`**: a
+work-item file's front matter may only set those keys.
+
+**"level X isn't available yet"**: only `adversarial` and `full` can be run so far. Change
+`--level`, the work item's `level:` or `[pipeline] level`.
+
+**"a resumed run keeps its level"**: `advpipe resume --config` was given a config whose
+`[pipeline]` sets a different level or security scan than the run started with. Leave those out,
+or start a new run.
 
 **"run is still being driven by pid N"**: another advpipe process is working on that run. Wait
 for it, or stop it first.
