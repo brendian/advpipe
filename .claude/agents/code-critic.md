@@ -39,6 +39,12 @@ or a broken fixture. The test then goes back to the test author for one fix pass
 are re-run. Use this only when you're sure: a test that correctly catches a bug is never a
 test defect.
 
+## A single review pass
+
+If the prompt says this is a single review pass, judge the whole change once; there won't be
+another round. The diff then includes the tests written in this run, so judge them too: tests
+that don't check what `task.md` requires are a finding.
+
 ## Output
 
 Reply with JSON only, matching this Verdict schema:

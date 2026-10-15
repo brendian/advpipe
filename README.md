@@ -111,9 +111,13 @@ changes:
 | 4 | **Adversarial** | spec → tests ⇄ critic → code ⇄ critic → arbiter → final checks | 6 | a feature with real logic |
 | 5 | **Full** | everything above, plus the standards and security reviewers and the security scan | 8 | risky, security-relevant or user-facing work |
 
-**Today only Adversarial and Full can be run**; Basic, Reviewer and Tests are planned
+**Today Tests, Adversarial and Full can be run**; Basic and Reviewer are planned
 ([docs/LEVELS_PLAN.md](docs/LEVELS_PLAN.md)) and are refused at the start of a run with
-"level X isn't available yet". `advpipe levels` prints this table for your config, with the
+"level X isn't available yet". At **Tests**, the test author and the coder each loop on the
+checks alone (no critic), up to the same round caps; then the code critic reviews the whole
+change once. Anything still open after a stage's cap, or blocking in that review, goes back to
+the author for one final pass (there's no arbiter, so nothing is dismissed), and the checks
+decide. `advpipe levels` prints this table for your config, with the
 number of agent calls each level makes. Pick a level with `--level`, `level:` in a work item's
 front matter, or `[pipeline] level` in `pipeline.toml` (in that order of precedence).
 
@@ -469,7 +473,7 @@ advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
 - `--level LEVEL`: how much checking, by name or number: `basic` (1), `reviewer` (2), `tests`
   (3), `adversarial` (4) or `full` (5). See [levels](#levels-how-much-checking-a-run-gets).
   Default: the work item's front matter, else `[pipeline] level`, else `full`. Only
-  `adversarial` and `full` can be run so far.
+  `tests`, `adversarial` and `full` can be run so far.
 - `--security-scan` / `--no-security-scan`: run the security scan or not. Default: the work
   item's front matter, else `[pipeline] security_scan`, else on at `full` only.
 - `--scan-failures ask|ignore|block`: below `full`, what a failing security scan means. For
@@ -859,7 +863,7 @@ and `advpipe status <run-id>`.
 **`unknown key '...' (known keys: name, config, level, security_scan, scan_failures)`**: a
 work-item file's front matter may only set those keys.
 
-**"level X isn't available yet"**: only `adversarial` and `full` can be run so far. Change
+**"level X isn't available yet"**: only `tests`, `adversarial` and `full` can be run so far. Change
 `--level`, the work item's `level:` or `[pipeline] level`.
 
 **"a resumed run keeps its level"**: `advpipe resume --config` was given a config whose

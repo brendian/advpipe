@@ -67,6 +67,21 @@ only appear where today's pipeline would end the run, fail, or never get asked.
 >   "not reached".
 > - `pyproject.toml` excludes this file from `ruff format`, which would otherwise re-align the
 >   code blocks above.
+>
+> **L1 done** (2026-10-14): the Tests level runs (`adversarial_stage(..., critic=False)`,
+> `_settle(..., arbiter=False)`, `stages.single_review_stage`, the code critic's "single review
+> pass" paragraph); tests in `tests/test_tests_level.py`. Where the code differs from the text:
+> - Without an arbiter, the final author pass is told "these findings are still open and must
+>   be fixed" (not "the arbiter ruled ..."), and is charged to the stage being settled
+>   (`stage-tests`, `stage-code` or `review`) rather than `arbiter`; the run doesn't enter
+>   `Stage.ARBITER` (that level's timeline has no ARBITER step). The rulings go into
+>   `state.rulings`, `ruling` events and the report, but no `arbiter.json` is written.
+> - Single-review findings are prefixed `REV-` (the full review's are `STD-`/`SEC-`).
+> - The critic prompt also lists the test files changed in the run under "part of the diff
+>   below", and the code-critic paragraph asks it to judge those tests too (at level 3 there's
+>   no test critic).
+> - The web UI is still unchanged (L5): a Tests run's page renders, with the six fixed steps;
+>   `review/single.json` isn't shown yet.
 
 This plan is for **future Claude Code sessions**. Each milestone below (L0 to L6) is sized for
 one session and ends with tests. See [How to use this plan](#how-to-use-this-plan-in-a-session).

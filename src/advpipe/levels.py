@@ -67,7 +67,7 @@ LEVEL_ORDER: list[Level] = [
 SOLO = "solo"
 
 # Levels a run can be started at today; the others are accepted in config and front matter.
-AVAILABLE: frozenset[Level] = frozenset({Level.ADVERSARIAL, Level.FULL})
+AVAILABLE: frozenset[Level] = frozenset({Level.TESTS, Level.ADVERSARIAL, Level.FULL})
 
 
 class LevelInfo(BaseModel, frozen=True):

@@ -20,6 +20,7 @@ from advpipe.models import (
     Finding,
     Level,
     OpenQuestion,
+    Ruling,
     RunState,
     Stage,
     StageResult,
@@ -28,6 +29,8 @@ from advpipe.models import (
 from advpipe.runlog import RunLog, is_this_process, render_report
 from advpipe.runner import AgentRunner, Role
 from advpipe.stages import (
+    ARBITER_NOTE,
+    NO_ARBITER_NOTE,
     Context,
     StageKind,
     adversarial_stage,
@@ -38,6 +41,7 @@ from advpipe.stages import (
     note_scanner_skipped,
     review_stage,
     run_gate_names,
+    single_review_stage,
     spec_prompt,
     spec_revision_prompt,
 )
@@ -335,23 +339,27 @@ class Orchestrator:
 
         if "tests" not in done:
             self._enter(Stage.TESTS)
-            if not await self._settle(
-                await adversarial_stage(ctx, "tests"), Role.TEST_AUTHOR, "tests"
-            ):
+            result = await adversarial_stage(ctx, "tests", critic=shape.critics)
+            if not await self._settle(result, Role.TEST_AUTHOR, "tests", arbiter=shape.arbiter):
                 return
             done["tests"] = ws.commit("advpipe: tests")
 
         if "code" not in done:
             self._enter(Stage.CODE)
-            if not await self._settle(await adversarial_stage(ctx, "code"), Role.CODER, "code"):
+            result = await adversarial_stage(ctx, "code", critic=shape.critics)
+            if not await self._settle(result, Role.CODER, "code", arbiter=shape.arbiter):
                 return
             done["code"] = ws.commit("advpipe: implementation")
 
-        if shape.review == "full" and "review" not in done:
+        if shape.review != "none" and "review" not in done:
             self._enter(Stage.REVIEW)
             if not ctx.last_gates:  # resumed: reviewers still need current gate output
                 ctx.last_gates = await run_gates(self.config, ws.path, run_gate_names(self.state))
-            if not await self._settle(await review_stage(ctx), Role.CODER, "code"):
+            if shape.review == "full":
+                result = await review_stage(ctx)
+            else:
+                result = await single_review_stage(ctx)
+            if not await self._settle(result, Role.CODER, "code", arbiter=shape.arbiter):
                 return
             changed = ws.changed_files(ws.head())
             done["review"] = ws.commit("advpipe: review fixes") if changed else ws.head()
@@ -461,21 +469,45 @@ class Orchestrator:
             new.append(q)
         return new
 
-    async def _settle(self, result: StageResult, author: Role, kind: StageKind) -> bool:
-        """Record a stage result; send open findings to the arbiter. False = run stops."""
+    async def _settle(
+        self, result: StageResult, author: Role, kind: StageKind, *, arbiter: bool = True
+    ) -> bool:
+        """Record a stage result; send open findings to the arbiter, then one final author
+        pass on those ruled fix. Without an arbiter (``arbiter=False``) every open finding is
+        ruled fix, with the reason recorded. False = run stops."""
         assert self.ctx is not None
         self.state.minor_findings += result.minor_findings
         if result.passed:
             return True
         previous = self.state.stage
-        self._enter(Stage.ARBITER)
-        rulings = await arbiter_stage(self.ctx, result.open_findings, result.name)
-        self.state.rulings += rulings
-        self.runlog.write_json("arbiter.json", self.state.rulings)
+        if arbiter:
+            self._enter(Stage.ARBITER)
+            rulings = await arbiter_stage(self.ctx, result.open_findings, result.name)
+            self.state.rulings += rulings
+            self.runlog.write_json("arbiter.json", self.state.rulings)
+            note, charged = ARBITER_NOTE, "arbiter"
+        else:
+            reason = f"no arbiter at level {self.state.level.value}"
+            rulings = [
+                Ruling(finding_id=d.finding.id, decision="fix", reason=reason)
+                for d in result.open_findings
+            ]
+            for r in rulings:
+                self._emit(
+                    "ruling",
+                    f"  {r.finding_id}: fix ({reason})",
+                    finding_id=r.finding_id,
+                    decision=r.decision,
+                )
+            self.state.rulings += rulings
+            # Charged to the stage being settled: there's no arbiter step at this level.
+            note, charged = NO_ARBITER_NOTE, _BUDGET_STAGE[result.name]
         fix_ids = {r.finding_id for r in rulings if r.decision == "fix"}
         to_fix = [d.finding for d in result.open_findings if d.finding.id in fix_ids]
         if to_fix:
-            remaining = await final_author_pass(self.ctx, author, to_fix, kind)
+            remaining = await final_author_pass(
+                self.ctx, author, to_fix, kind, note=note, stage=charged
+            )
             if remaining:
                 self._stop(Status.NEEDS_HUMAN, remaining)
                 return False
@@ -494,6 +526,10 @@ async def run_many(
             return await make(item).run()
 
     return list(await asyncio.gather(*(one(item) for item in items)))
+
+
+# Budget keys of the stages _settle can settle (StageResult.name → Budget stage).
+_BUDGET_STAGE = {"tests": "stage-tests", "code": "stage-code", "review": "review"}
 
 
 def _finding(fid: str, criterion: str, claim: str) -> Finding:

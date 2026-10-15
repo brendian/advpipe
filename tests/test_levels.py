@@ -296,7 +296,7 @@ def test_scan_failures_precedence(target_repo: Path, monkeypatch: pytest.MonkeyP
     ("args", "front", "toml", "error"),
     [
         (["--level", "basic"], "", "", "level basic isn't available yet"),
-        (["--level", "3"], "", "", "level tests isn't available yet"),
+        (["--level", "2"], "", "", "level reviewer isn't available yet"),
         ([], "level: reviewer\n", "", "level reviewer isn't available yet"),
         ([], "", '[pipeline]\nlevel = "basic"\n', "level basic isn't available yet"),
         (["--level", "huge"], "", "", "unknown level 'huge'"),

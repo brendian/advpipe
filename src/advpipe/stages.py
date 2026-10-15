@@ -279,10 +279,26 @@ REVIEW_PATHS = [".", ":(exclude)task.md"]
 
 
 def critic_prompt(
-    ctx: Context, kind: StageKind, diff_label: str, diff: str, gates: list[GateResult]
+    ctx: Context,
+    kind: StageKind,
+    diff_label: str,
+    diff: str,
+    gates: list[GateResult],
+    *,
+    single: bool = False,
 ) -> str:
+    """What a critic judges: task.md, the diff, gate output and, for code, which tests the run
+    wrote. ``single``: the one review of the whole change at levels without critics."""
     context = ""
-    if kind == "code":
+    if single:
+        tests = ctx.workspace.changed_files(ctx.state.base_commit, ctx.config.paths.tests)
+        listed = "\n".join(f"- {t}" for t in tests) or "- (none)"
+        context = (
+            "\n\n# Review\n\nThis is a single review pass: judge the whole change once; there "
+            "won't be another round.\n\n# Test files changed in this run (part of the diff "
+            f"below)\n\n{listed}"
+        )
+    elif kind == "code":
         tests = ctx.workspace.changed_files(ctx.spec_commit, ctx.config.paths.tests)
         listed = "\n".join(f"- {t}" for t in tests) or "- (none)"
         context = (
@@ -419,18 +435,22 @@ async def test_fix_pass(
 # --------------------------------------------------------------------------- stages
 
 
-async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
-    """Author ⇄ critic loop with a round cap. Returns findings the arbiter must settle."""
+async def adversarial_stage(ctx: Context, kind: StageKind, *, critic: bool = True) -> StageResult:
+    """Author ⇄ critic loop with a round cap. Returns findings the arbiter must settle.
+
+    ``critic=False`` (the Tests level): each round runs the author, the guard and the gates,
+    and no critic, so only gate and guard findings go back to the author.
+    """
     limits = ctx.config.limits
     if kind == "tests":
-        author, critic, cap, label = (
+        author, critic_role, cap, label = (
             Role.TEST_AUTHOR,
             Role.TEST_CRITIC,
             limits.max_rounds_tests,
             "Test diff",
         )
     else:
-        author, critic, cap, label = (
+        author, critic_role, cap, label = (
             Role.CODER,
             Role.CODE_CRITIC,
             limits.max_rounds_code,
@@ -481,10 +501,13 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
 
         diff = ctx.workspace.diff(base, REVIEW_PATHS)
         ctx.runlog.write_text(f"{rdir}/diff.patch", diff)  # exactly what the critic judges
-        prompt = critic_prompt(ctx, kind, label, diff, gates)
-        verdict, raw = await call_critic(ctx, critic, prompt, stage)
-        _emit_verdict(ctx, critic, verdict)
-        ctx.runlog.write_text(f"{rdir}/critic.json", raw)
+        if critic:
+            prompt = critic_prompt(ctx, kind, label, diff, gates)
+            verdict, raw = await call_critic(ctx, critic_role, prompt, stage)
+            _emit_verdict(ctx, critic_role, verdict)
+            ctx.runlog.write_text(f"{rdir}/critic.json", raw)
+        else:
+            verdict = Verdict(verdict="PASS")  # no critic at this level: the gates decide
 
         # A failing test the critic says is itself wrong goes back to the test author, once per
         # stage. The rerun gates are the ground truth: the claim alone never clears a failure.
@@ -524,7 +547,8 @@ async def adversarial_stage(ctx: Context, kind: StageKind) -> StageResult:
     if for_arbiter or to_author:
         reason = "round cap reached" if to_author else "disputed findings"
         count = len(for_arbiter) + len(to_author)
-        ctx.emit("stage", f"{reason}: {count} open finding(s) go to the arbiter", passed=False)
+        where = "go to the arbiter" if critic else "are still open"
+        ctx.emit("stage", f"{reason}: {count} open finding(s) {where}", passed=False)
     else:
         ctx.emit("stage", f"{kind} stage passed in {rounds} round(s)", passed=True)
     open_findings = for_arbiter + [Dispute(finding=f) for f in to_author]
@@ -593,6 +617,30 @@ async def review_stage(ctx: Context) -> StageResult:
     )
 
 
+async def single_review_stage(ctx: Context) -> StageResult:
+    """One code-critic pass over the whole change, no back-and-forth (levels without critics).
+
+    A test-defect finding is an ordinary finding here: there's no test-fix pass to send it to.
+    """
+    diff = ctx.workspace.diff(ctx.state.base_commit, REVIEW_PATHS)
+    ctx.runlog.write_text("review/diff.patch", diff)  # exactly what the critic judges
+    prompt = critic_prompt(ctx, "code", "Full diff", diff, ctx.last_gates, single=True)
+    verdict, raw = await call_critic(ctx, Role.CODE_CRITIC, prompt, "review")
+    _emit_verdict(ctx, Role.CODE_CRITIC, verdict)
+    ctx.runlog.write_text("review/single.json", raw)
+
+    found = _prefix(verdict.findings, "REV-")
+    blocking = [Dispute(finding=f) for f in found if f.blocking]
+    ctx.state.rounds_used["review"] = 1
+    return StageResult(
+        name="review",
+        passed=not blocking,
+        rounds=1,
+        open_findings=blocking,
+        minor_findings=[f for f in found if not f.blocking],
+    )
+
+
 def _arbiter_prompt(ctx: Context, disputes: list[Dispute]) -> str:
     items = [
         {
@@ -645,14 +693,23 @@ async def arbiter_stage(ctx: Context, disputes: list[Dispute], label: str) -> li
     return rulings
 
 
+ARBITER_NOTE = "Final pass: the arbiter ruled these must be fixed"
+NO_ARBITER_NOTE = "Final pass: these findings are still open and must be fixed"
+
+
 async def final_author_pass(
-    ctx: Context, author: Role, findings: list[Finding], kind: StageKind
+    ctx: Context,
+    author: Role,
+    findings: list[Finding],
+    kind: StageKind,
+    *,
+    note: str = ARBITER_NOTE,
+    stage: str = "arbiter",
 ) -> list[Finding]:
-    """One last author pass on `fix` rulings; no critic. Returns findings still failing."""
-    prompt = author_findings_prompt(
-        findings, ctx.last_gates, "Final pass: the arbiter ruled these must be fixed"
-    )
-    result = await call_agent(ctx, author, prompt, "arbiter")
+    """One last author pass on `fix` rulings; no critic. Returns findings still failing.
+    ``stage`` is what the call is charged to."""
+    prompt = author_findings_prompt(findings, ctx.last_gates, note)
+    result = await call_agent(ctx, author, prompt, stage)
     ctx.runlog.write_text(f"final-pass-{kind}/author.txt", result.text)
     guard = test_file_guard(ctx, ctx.tests_commit) if kind == "code" else []
     gates, gate_f = await stage_gates(ctx, kind)

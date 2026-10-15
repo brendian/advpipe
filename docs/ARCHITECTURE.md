@@ -85,7 +85,7 @@ orchestrator reads (`levels.SHAPES`):
 | 4 | `adversarial` | no | yes | none | yes | off | SPEC → TESTS ⇄ → CODE ⇄ → ARBITER → FINAL CHECKS |
 | 5 | `full` | no | yes | full | yes | on | the pipeline above |
 
-**Built so far: `adversarial` and `full`.** `basic`, `reviewer` and `tests` are accepted in
+**Built so far: `tests`, `adversarial` and `full`.** `basic` and `reviewer` are accepted in
 config and front matter but refused when a run starts (`levels.check_available`, called by
 `advpipe run` and `Orchestrator._new_state`). Everything else said about a level (its roles,
 steps, the safeguards it drops, its agent-call bounds, its label) is derived from `SHAPES` in
@@ -98,10 +98,11 @@ steps, the safeguards it drops, its agent-call bounds, its label) is derived fro
 - `dropped_safeguards(level, scan)`: plain-language lines for the report and `advpipe levels`;
   empty for `full` with the scan on.
 - `max_agent_calls(level, limits)`: (happy path, worst case) agent calls between two person
-  decisions. Full: 7 and 30 with the default caps; Adversarial: 5 and 23. The worst case counts
+  decisions. Full: 7 and 30 with the default caps; Adversarial: 5 and 23; Tests: 4 and 11. The worst case counts
   one JSON retry per critic, reviewer and arbiter call, the test-fix pass, and the arbiter and
-  final author pass after each stage's cap. `tests/test_levels.py` runs a script that fails as
-  late as it can at every stage and checks the count matches, so the formula can't drift.
+  final author pass after each stage's cap. `tests/test_levels.py` (Full, Adversarial) and
+  `tests/test_tests_level.py` (Tests) run a script that fails as late as it can at every stage
+  and check the count matches, so the formula can't drift.
 - `level_tag(state)`: `"adversarial"`, `"full, no scan"`, ... for the summary line and the
   `run_start` message; empty for `full` with the scan on, so those read as they always have.
 
@@ -246,21 +247,41 @@ is just resumed. `cli._summary` and `advpipe status <run-id>` print the question
 procedure as instructions: it asks the user in the session, relaunches the spec writer with the
 answers, and writes the Answers section itself.
 
-### 2. Tests (`adversarial_stage(ctx, "tests")`)
+### 2. Tests (`adversarial_stage(ctx, "tests", critic=shape.critics)`)
 The test-author / test-critic loop, capped at `max_rounds_tests` (default 2). Its gate is
 *inverted*: the new tests must exist and must **fail**. See
 [the loop](#the-adversarial-loop-in-detail). Then `_settle` handles anything still open, and
 the result is committed (`state.commits["tests"]`).
 
-### 3. Code (`adversarial_stage(ctx, "code")`)
+### 3. Code (`adversarial_stage(ctx, "code", critic=shape.critics)`)
 The coder / code-critic loop, capped at `max_rounds_code` (default 3). Its gate requires tests,
 types and lint to be green. The test-file guard runs after every coder pass. Then `_settle`, and
 a commit (`state.commits["code"]`).
 
-### 4. Review (`review_stage`)
-Only at levels whose shape has `review == "full"` (today: `full`). At `adversarial` the run goes
-from the code stage straight to the final gates, and the report lists "No standards review" and
-"No security review" under *Not done at this level*.
+**Without critics** (`critic=False`, the `tests` level), each round still runs the author, the
+test-file guard (code stage) and the stage's gates, and writes `author.txt`, `diff.patch` and
+`gates.json`, but makes no critic call and writes no `critic.json`. The only blocking findings
+are then gate and guard findings, which go back to the author up to the same round cap. The red
+gate still applies to the tests stage. The test-defect path needs a code critic's finding, so it
+never fires at this level.
+
+### 4. Review (`review_stage`, or `single_review_stage`)
+At levels whose shape has `review == "full"` (`full`), the two reviewers below. At `review ==
+"single"` (`tests`), one code-critic pass instead (below). At `adversarial` (`review ==
+"none"`) the run goes from the code stage straight to the final gates, and the report lists
+"No standards review" and "No security review" under *Not done at this level*.
+
+**Single review** (`single_review_stage`): one `code-critic` call, no back-and-forth. Its
+prompt is `critic_prompt(..., single=True)`: `task.md`, the full diff since the base commit
+(tests included, `task.md` excluded), the current gate output, the list of test files changed
+in the run, and the line "This is a single review pass" (the code critic's system prompt says
+what that means; the flag is in the prompt text, never a different system prompt). Findings
+are prefixed `REV-`. A `test-defect` finding is an ordinary blocking finding here: there's no
+test-fix pass, and the coder's test-file guard still protects the tests. Blocking findings go
+to `_settle` (below), so the coder gets one pass, then the gates. Files: `review/diff.patch`,
+`review/single.json`; charged to stage `review`.
+
+At `full`:
 
 - Runs the security scanner gate (semgrep by default), unless the run's security scan is off.
   It's optional: if the tool isn't installed, the gate is skipped and the report says so.
@@ -286,6 +307,13 @@ returns. Otherwise:
    the tests stage, coder otherwise) **one** more pass, with **no critic round** afterwards.
    Gates (and the test-file guard, for the coder) run again.
 3. If gates still fail, the run stops with `needs_human` and those failures as open findings.
+
+At levels without an arbiter (`_settle(..., arbiter=False)`, the `tests` level), step 1 is
+done by code: every open finding is ruled `fix` with the reason "no arbiter at level tests",
+recorded in `state.rulings` (so the report shows why) and as `ruling` events, with no model call
+and no ARBITER step. The final author pass (step 2) is then told "these findings are still
+open" rather than "the arbiter ruled", and is charged to the stage being settled
+(`stage-tests`, `stage-code` or `review`) instead of `arbiter`. Step 3 is the same.
 
 ### 6. Final gates
 All gates (`run_gate_names`: plus the security scan below `full` when it's on) run one last
@@ -460,8 +488,11 @@ spec/pass-N/{task.md, author.txt, answers.json}   each spec pass's task.md; for 
                 (revisions after answers) also the reply and the questions and answers given
 stage-tests/round-N/{author.txt, diff.patch, critic.json, gates.json}
 stage-code/round-N/{author.txt, diff.patch, critic.json, gates.json}
-review/{diff.patch, standards.json, security.json, scanner.json}
-arbiter.json, arbiter-<stage>.json, final-pass-<kind>/...   (when the arbiter ran)
+stage-*/round-N/critic.json is absent at levels without critics (tests)
+review/{diff.patch, standards.json, security.json, scanner.json}   (full)
+review/{diff.patch, single.json}   (the single review: tests)
+arbiter.json, arbiter-<stage>.json   (when the arbiter ran)
+final-pass-<kind>/{author.txt, gates.json}   (the final author pass after _settle)
 final-gates.json
 report.md       human summary: status, findings, rulings, cost table, notes
 run.lock        present only while a process is driving the run
