@@ -19,6 +19,7 @@ from pathlib import Path
 
 from advpipe.config import Config
 from advpipe.events import emit
+from advpipe.levels import SHAPES
 from advpipe.models import OpenQuestion, RunState, Stage, Status
 from advpipe.runlog import RunLocked, RunLog
 from advpipe.workspace import GitError, branch_exists
@@ -48,10 +49,22 @@ def normalise(text: str) -> str:
 # --------------------------------------------------------------------------- run state
 
 
+def spec_stage(state: RunState) -> tuple[Stage, str]:
+    """The stage that writes task.md, and its commit key: SPEC and ``spec`` normally, SOLO and
+    ``solo`` at the levels where one agent does it all (basic and reviewer)."""
+    if SHAPES[state.level].solo:
+        return Stage.SOLO, "solo"
+    return Stage.SPEC, "spec"
+
+
 def migrate(state: RunState) -> RunState:
     """Fill ``questions`` for a run stopped by an older advpipe, which kept its blocking
     questions only as open findings (``Q1``... with criterion ``open-question``)."""
-    if state.questions or state.status is not Status.NEEDS_HUMAN or state.stage is not Stage.SPEC:
+    if (
+        state.questions
+        or state.status is not Status.NEEDS_HUMAN
+        or state.stage is not spec_stage(state)[0]
+    ):
         return state
     old = [f for f in state.open_findings if f.criterion == "open-question"]
     if not old:
@@ -87,11 +100,12 @@ def answered(state: RunState) -> list[OpenQuestion]:
 
 
 def _blocked_at_spec(state: RunState, max_passes: int) -> bool:
-    """Stopped at SPEC on blocking questions, with spec passes left to answer them."""
+    """Stopped at SPEC (or SOLO) on blocking questions, with spec passes left to answer them."""
+    stage, key = spec_stage(state)
     return (
         state.status is Status.NEEDS_HUMAN
-        and state.stage is Stage.SPEC
-        and "spec" not in state.commits
+        and state.stage is stage
+        and key not in state.commits
         and bool(state.questions)
         and state.spec_passes < max_passes
     )
@@ -249,9 +263,18 @@ def _branch_exists(repo: Path, branch: str) -> bool:
 def not_waiting_message(state: RunState, cap: int) -> str:
     """Why a run can't take answers now, for the person trying."""
     run = state.run_id
+    stage, _ = spec_stage(state)
+    d = state.decision
+    if d is not None and d.kind == "spec_cap" and not d.choice:
+        return (
+            f"run {run}'s spec still has blocking questions after {state.spec_passes} spec "
+            f"pass(es), the limit (limits.max_rounds_spec), so they can't be answered one more "
+            f"time. Begin work anyway, and the agent decides them (and any later question), or "
+            f"stop: advpipe decide {run} begin | stop"
+        )
     if (
         state.status is Status.NEEDS_HUMAN
-        and state.stage is Stage.SPEC
+        and state.stage is stage
         and state.questions
         and state.spec_passes >= cap
     ):

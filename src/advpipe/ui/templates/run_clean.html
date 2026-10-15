@@ -7,7 +7,8 @@
 <p>This throws away what the run made, so it no longer clutters your repo:</p>
 <ul>
   {%- if info.worktree %}
-  <li>its working copy <code>{{ info.worktree }}</code></li>
+  <li>its working copy <code>{{ info.worktree }}</code>
+    {%- if info.dirty %}, with <strong>uncommitted work</strong> that you finished the run with: nothing else has a copy of it{% endif %}</li>
   {%- endif %}
   {%- if info.branch %}
   <li>its branch <code>{{ info.branch }}</code>
@@ -22,7 +23,11 @@
 {%- endif %}
 <form class="item-form" method="post" action="/runs/{{ run_id }}/clean" hx-post="/runs/{{ run_id }}/clean" hx-target="#action-result">
   <input type="hidden" name="confirm" value="yes">
-  {%- if info.branch and info.unmerged != 0 %}
+  {%- if info.dirty %}
+  <label class="choice"><input type="checkbox" name="force" value="yes">
+    Delete its uncommitted work{% if info.unmerged %}, and its commits,{% endif %} anyway. They can't be got back afterwards;
+    look at the work first with <code>git -C {{ info.worktree }} status</code>.</label>
+  {%- elif info.branch and info.unmerged != 0 %}
   <label class="choice"><input type="checkbox" name="force" value="yes">
     Delete its commits anyway. They can't be got back afterwards
     {%- if state.base_commit %}; look at them first with <code>git log --oneline {{ state.base_commit[:12] }}..{{ info.branch }}</code>{% endif %}.</label>

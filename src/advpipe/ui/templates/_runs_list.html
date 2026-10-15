@@ -1,3 +1,4 @@
+{% import "_macros.html" as m %}
 {#- Re-fetched every few seconds; it replaces itself, so polling carries on. #}
 <section id="runs" class="runs"
          hx-get="/runs/list?show={{ show }}"
@@ -8,6 +9,9 @@
     <a href="/?show={{ key }}"{% if key == show %} aria-current="true"{% endif %}>{{ label }} <span class="count">{{ counts[key] }}</span></a>
     {% endfor %}
   </nav>
+  {%- if usage.known %}
+  {{ m.usage_line(usage) }}
+  {%- endif %}
 
   {% if rows %}
   <table class="runs-table">
@@ -20,7 +24,7 @@
         <td><span class="chip chip-{{ row.status }}" title="{{ row.info.help }}">{{ row.info.icon }} {{ row.info.label }}</span></td>
         <td>
           <div class="title"><a href="/runs/{{ row.run_id }}">{{ row.title }}</a></div>
-          <div class="sub"><code>{{ row.branch or "(no branch yet)" }}</code> · <span class="muted">{{ row.run_id }}</span></div>
+          <div class="sub"><span class="chip chip-level" title="How much checking this run gets">{{ row.level_label }}</span> <code>{{ row.branch or "(no branch yet)" }}</code> · <span class="muted">{{ row.run_id }}</span></div>
         </td>
         <td class="stage">{{ row.stage }}</td>
         <td class="cost">

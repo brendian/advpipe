@@ -105,6 +105,9 @@ def repo(target_repo: Path) -> Path:
 # --------------------------------------------------------------------------- starting a run
 
 
+SHOWN = "full;on;ask;ask"  # the level, scan, scan policy and Bypass the dialog showed
+
+
 def test_new_run_dialog_shows_the_budget_before_starting(repo: Path, cli: Cli) -> None:
     b = Browser(repo)
     page = b.get("/runs/new?item=server/s01.md").text
@@ -124,10 +127,23 @@ def test_new_run_dialog_shows_the_budget_before_starting(repo: Path, cli: Cli) -
 
 def test_start_from_a_work_item(repo: Path, cli: Cli) -> None:
     b = Browser(repo)
-    r = b.post("/runs/start", {"source": "item", "item": "server/s01.md", "budget": "7.50"})
+    r = b.post(
+        "/runs/start",
+        {"source": "item", "item": "server/s01.md", "budget": "7.50", "shown": SHOWN},
+    )
     assert redirected_to(r) == "/runs/20261008-120000-abc123?notice=started"
     item = repo / "work-items" / "server" / "s01.md"
-    assert cli.args() == ["run", "--repo", str(repo), "--detach", "--item", str(item)]
+    # The level is always passed: a run never starts at a level nobody saw.
+    assert cli.args() == [
+        "run",
+        "--repo",
+        str(repo),
+        "--detach",
+        "--item",
+        str(item),
+        "--level",
+        "full",
+    ]
     kwargs = cli.kwargs[0]
     assert kwargs.get("shell", False) is False and kwargs["cwd"] == repo
     assert kwargs["stdin"] is subprocess.DEVNULL and kwargs["timeout"] > 0
@@ -143,11 +159,13 @@ def test_start_a_one_off_task_with_overrides(repo: Path, cli: Cli) -> None:
         "name": "--my branch",
         "config": "cheap.toml",
         "budget": "2.00",
+        "shown": SHOWN,
     }
     redirected_to(b.post("/runs/start", form))
     assert cli.args() == [
         "run", "--repo", str(repo), "--detach",
         "--config", str(repo / "cheap.toml"),
+        "--level", "full",
         "--name", "--my branch",
         "--", "--help; rm -rf ~ $(touch /tmp/x)\nsecond line",
     ]  # fmt: skip
@@ -185,7 +203,7 @@ def test_start_refuses_a_budget_nobody_saw(repo: Path, cli: Cli) -> None:
     ],
 )
 def test_start_rejects_bad_forms(repo: Path, cli: Cli, form: dict[str, str], problem: str) -> None:
-    r = Browser(repo).post("/runs/start", {"budget": "7.50", **form})
+    r = Browser(repo).post("/runs/start", {"budget": "7.50", "shown": SHOWN, **form})
     assert r.status_code == 422, r.text
     assert problem in r.text
     assert "Not started" in r.text and "<html" not in r.text  # the form, to swap in
@@ -200,14 +218,18 @@ def test_invalid_config_is_reported(repo: Path, cli: Cli) -> None:
 
 def test_start_shows_what_advpipe_said_when_it_refuses(repo: Path, cli: Cli) -> None:
     cli.reply = subprocess.CompletedProcess([], 2, "", f"Error: {EVIL}\n")
-    r = Browser(repo).post("/runs/start", {"source": "task", "task": "x", "budget": "7.50"})
+    r = Browser(repo).post(
+        "/runs/start", {"source": "task", "task": "x", "budget": "7.50", "shown": SHOWN}
+    )
     assert r.status_code == 422 and "advpipe refused to start it" in r.text
     no_raw_html(r.text)
 
 
 def test_start_needs_a_run_id_back(repo: Path, cli: Cli) -> None:
     cli.reply = subprocess.CompletedProcess([], 0, "../../etc\n", "")
-    r = Browser(repo).post("/runs/start", {"source": "task", "task": "x", "budget": "7.50"})
+    r = Browser(repo).post(
+        "/runs/start", {"source": "task", "task": "x", "budget": "7.50", "shown": SHOWN}
+    )
     assert r.status_code == 422 and "printed no run id" in r.text
 
 
@@ -380,7 +402,7 @@ def test_actions_need_csrf_and_the_token(repo: Path, cli: Cli) -> None:
     run_with(repo, Status.RUNNING, "live", live=True)
     run_with(repo, Status.ERROR, "dead")
     posts = {
-        "/runs/start": {"source": "task", "task": "x", "budget": "7.50"},
+        "/runs/start": {"source": "task", "task": "x", "budget": "7.50", "shown": SHOWN},
         "/runs/live/cancel": {},
         "/runs/dead/resume": {"budget": "50"},
         "/runs/dead/clean": {"confirm": "yes", "logs": "yes"},
@@ -510,7 +532,8 @@ def events_text(log: RunLog) -> str:
 
 def test_start_cancel_resume_end_to_end(repo: Path, fake_child: Path) -> None:
     b = Browser(repo)
-    r = b.post("/runs/start", {"source": "item", "item": "server/s01.md", "budget": "7.50"})
+    form = {"source": "item", "item": "server/s01.md", "budget": "7.50", "shown": SHOWN}
+    r = b.post("/runs/start", form)
     run_url = redirected_to(r).split("?")[0]
     run_id = run_url.rsplit("/", 1)[-1]
     log = RunLog.for_run(repo, run_id)

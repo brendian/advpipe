@@ -107,6 +107,82 @@ only appear where today's pipeline would end the run, fail, or never get asked.
 > - Not done here (later milestones): the UI form's Bypass boxes (L5), the skill (L4), and the
 >   report/`status` text beyond the questions section (L4).
 
+> **L3 done** (2026-10-14): decision points (`red_checks`, `scan_hits`, `spec_cap`;
+> `usage_limit` waits for L6), the scan policy, `advpipe decide`, and the solo levels (Basic and
+> Reviewer). Tests: `tests/test_decisions.py`, `tests/test_solo.py`,
+> `tests/test_level_invariants.py` (the §4 invariants at all five levels). Where the code
+> differs from the text:
+> - `RunState.decision` is a property (the last of `RunState.decisions`), not a second field, so
+>   the open decision can't drift from the list. `Decision.kind` has three values until L6.
+>   `ended_by` is `""`, `takeover` or `stop`; *finish* comes with `usage_limit`.
+> - The `decision` event's field is `decision_kind` (`kind` is `emit`'s own parameter), plus
+>   `choice`, `decision_stage` and, when asked, `choices`.
+> - A `scan_hits` decision comes from `decisions.DecisionNeeded`, raised by
+>   `stages.checked_findings` from wherever the gates ran and caught in `Orchestrator.run`.
+>   After `ignore`/`block` the stage restarts with the author's work kept and
+>   `Context.judge_existing` set: its first round skips the author call and judges the work as
+>   it is (so `ignore` costs no extra agent call). An earlier unapplied `fix` is dropped if a
+>   scan decision interrupts its pass (only the latest decision is applied).
+> - A decision is `applied` (and `fix_passes` counted) only once acted on, so a fix pass an
+>   interrupt cut short reruns on a plain `resume`; for that, `Workspace.reopen(keep_changes=)`
+>   is chosen by `decisions.pending_choice`, which doesn't need status `needs_human`.
+> - For a failure inside `_settle` the run stays "in" ARBITER (as before) and the decision's
+>   `stage` is the stage being settled; fix passes after it are charged to that stage's budget
+>   key (`stage-tests`, `stage-code`, `review`, `solo`), and from FINAL_GATES to `fix`.
+> - Under Bypass up front, the solo agent gets one more pass past `max_rounds_spec` (the pass
+>   that asked did none of the work); if it still asks, a bypass call answers and the checks
+>   decide, so a Basic run could in principle finish with little done. Level 3 isn't affected.
+> - `check_available` and the `ask`→`block` fallback are gone. `roles_for` returns
+>   `list[Role]`. The UI's role tables got a `solo` entry (the Help and Spec & context pages
+>   list it); the rest of the UI is L5's. A `needs_human` decision shows there as "needs you".
+> - Not done here: the `decisions/N.json` files and the report's `## Decisions` section (L4; the
+>   report notes the open decision and its commands), the skill (L4), usage limits (L6), and
+>   the terminal "decide later" is a prompt option, not a stored state.
+> - Existing tests that ended a run `needs_human` on red checks kept passing as they were
+>   (still `needs_human`); the ones changed were about the spec-pass cap ("stops for good" →
+>   *Begin work?*), levels "not available yet", the `ask` fallback note, and the UI role tables.
+
+> **L4 done** (2026-10-14): the report's `## Decisions` section and the `decisions/N.json`
+> files, the scan-policy line (report and `status`), `status <id>` showing decisions, bypass and
+> ignored hits, the skill rewritten for levels, Bypass, decision points and the solo procedure,
+> and the docs. Tests: `tests/test_reports.py`. Where the code differs from the text:
+> - Much of the README and `docs/ARCHITECTURE.md` text was already written by L0 to L3 (levels,
+>   decision points, the rules table, `CLAUDE.md`'s rules line); L4 added what was missing
+>   (the report sections, `status`, "when not to use", the Claude Code section, `BUILD_SPEC.md`'s
+>   note, `ANSWERS_PLAN.md`'s update line, the persistence table).
+> - `decisions/N.json` is written by `RunLog.write_state` (every decision, rewritten on each
+>   state write), so it's current wherever a decision is recorded or applied.
+> - The report's "finished as is" line comes with L6 (`usage_limit`).
+> - The skill's test is a light text check (`tests/test_reports.py`), like the agents' sync test.
+
+> **L5 done** (2026-10-14): the web UI for levels and decision points. Tests:
+> `tests/test_ui_levels.py`, `tests/test_ui_decisions.py`. Where the code differs from the text:
+> - The editor's level, scan, policy and Bypass are **drop-downs**, not a slider with an
+>   "inherit" box: the first option is `inherit` (not an empty value: FastAPI reads an empty
+>   form value as missing, so `inherit` is what means "leave the key out"; a form that doesn't
+>   carry a setting at all keeps the file's). Bypass there is a yes/no/inherit select.
+> - The New run dialog confirms what it showed with one hidden field, `shown`
+>   (`level;scan;policy;bypass`), next to the budget one, and `POST /runs/start` refuses a
+>   mismatch. The Bypass checkbox has a hidden `bypass_seen` beside it, since an unticked box
+>   sends nothing; the scan-policy radios start at the item's or config's value, and
+>   `--scan-failures`, `--bypass-questions` / `--no-bypass-questions` are passed only when the
+>   choice differs from that (so "only when ticked" holds with the default config). The
+>   scan radios are labelled *Default / On / Off* (the summary says what *Default* means and
+>   where it comes from, rather than the label changing).
+> - `app.js` (not "no new JavaScript") also moves an untouched slider to the level of the
+>   chosen work item: without it a slider rendered for one item would silently override the
+>   next item's front matter. The summary says when the slider overrides the item.
+> - In the answer form, a ticked "Let the agent decide" box beats text left in its answer box,
+>   and *Bypass all and continue* beats everything; the answer boxes aren't `required` (the
+>   server checks, keeping typed answers on a refusal). Bypass is passed as `--bypass=Q2` per
+>   question (the button sends every question's id), never a bare `--bypass`.
+> - `takeover` and `stop` have confirmation pages (`GET /runs/<id>/decide/<choice>`); the
+>   other choices post straight from the panel. Display statuses added: `needs_decision`,
+>   `handed_over`, and `ended` (a *Begin work?* stop). A decision made but not acted on shows
+>   as `stopped` (resume applies it).
+> - Not done here: the usage line, the `paused` and `finished` panels and the Console-credits
+>   warning (L6); the optional "typical cost at this level".
+
 This plan is for **future Claude Code sessions**. Each milestone below (L0 to L6) is sized for
 one session and ends with tests. See [How to use this plan](#how-to-use-this-plan-in-a-session).
 Read `CLAUDE.md`, `docs/ARCHITECTURE.md` and `docs/ANSWERS_PLAN.md` first. Paths and names below

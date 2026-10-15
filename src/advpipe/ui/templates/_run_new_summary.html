@@ -1,15 +1,42 @@
 {#- What starting would do, re-fetched as the form changes. The hidden `budget` field sends
     back the budget shown here; the server refuses to start if it's no longer the real one. #}
+{% import "_macros.html" as m %}
 <section class="run-summary">
   <h2>Before you start</h2>
   {%- if plan.budget is not none %}
   <p class="spend">This can spend up to <strong>${{ plan.budget_text }}</strong>
     <span class="muted">(the budget in {{ plan.config_label }}; the run stops if it reaches it).</span></p>
   {%- endif %}
+  {{ m.usage_line(usage) }}
+  {{ m.console_box(usage, plan.budget_text if plan.budget is not none else none) }}
   <dl class="run-meta">
     <div><dt>Config</dt><dd>{{ plan.config_label or "—" }}</dd></div>
     <div class="wide"><dt>Branch</dt><dd>{% if plan.branch %}<code>{{ plan.branch }}</code>{% else %}<span class="muted">(from the work item)</span>{% endif %}</dd></div>
   </dl>
+  <div class="level-card" data-inherited-level="{{ plan.inherited_level.value | level_number }}">
+    <h3>{{ plan.info.label }} <span class="muted">({{ plan.number }} of 5)</span></h3>
+    <p>{{ plan.info.description }} <span class="muted">Good for: {{ plan.info.good_for }}.</span></p>
+    <p><strong>{{ plan.agents }} agent{{ "s" if plan.agents != 1 }}</strong> ·
+      {%- if plan.calls[0] == plan.calls[1] %} {{ plan.calls[0] }} agent call{{ "s" if plan.calls[0] != 1 }}, then it asks you
+      {%- else %} {{ plan.calls[0] }} calls if all goes well, at most {{ plan.calls[1] }} before it asks you{% endif %}.</p>
+    {%- if plan.form.level and plan.level != plan.inherited_level %}
+    <p class="muted">The slider overrides {{ plan.inherited_level.value }}, from {{ plan.level_source }}.</p>
+    {%- elif not plan.form.level %}
+    <p class="muted">Level {{ plan.level.value }}, from {{ plan.level_source }}. Move the slider to change it.</p>
+    {%- endif %}
+    <p>Security scan: <strong>{{ plan.scan_text }}</strong>
+      <span class="muted">({{ "set here" if plan.form.scan != "default" else plan.scan_source }})</span>
+      {%- if plan.scan_asks %}; if it finds issues, <strong>{{ {"ask": "it asks you", "ignore": "they're ignored", "block": "they block the run until fixed"}[plan.failures] }}</strong>{% endif %}.</p>
+    {%- if plan.dropped %}
+    <p class="not-done">Not done at this level:</p>
+    <ul class="not-done">
+      {%- for line in plan.dropped %}<li>{{ line }}</li>{% endfor %}
+    </ul>
+    {%- endif %}
+    {%- if plan.bypass %}
+    <p class="warning">Blocking questions will be answered by the agent without asking you. It says so in <code>task.md</code> and the report, but it can guess wrong. Rarely the right choice.</p>
+    {%- endif %}
+  </div>
   {%- if plan.errors or plan.warnings %}
   <ul class="item-checks">
     {%- for e in plan.errors %}<li class="check check-error">{{ e }}</li>{% endfor %}
@@ -17,6 +44,7 @@
   </ul>
   {%- endif %}
   <input type="hidden" name="budget" value="{{ plan.budget_text }}">
+  <input type="hidden" name="shown" value="{{ plan.shown_text }}">
   <div class="form-actions">
     <button type="submit" class="button primary"{% if not plan.ok %} disabled{% endif %}>
       Start{% if plan.ok and plan.budget is not none %} (up to ${{ plan.budget_text }}){% endif %}</button>

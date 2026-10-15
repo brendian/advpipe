@@ -111,9 +111,13 @@ changes:
 | 4 | **Adversarial** | spec → tests ⇄ critic → code ⇄ critic → arbiter → final checks | 6 | a feature with real logic |
 | 5 | **Full** | everything above, plus the standards and security reviewers and the security scan | 8 | risky, security-relevant or user-facing work |
 
-**Today Tests, Adversarial and Full can be run**; Basic and Reviewer are planned
-([docs/LEVELS_PLAN.md](docs/LEVELS_PLAN.md)) and are refused at the start of a run with
-"level X isn't available yet". At **Tests**, the test author and the coder each loop on the
+All five levels can be run ([docs/LEVELS_PLAN.md](docs/LEVELS_PLAN.md) has the design). At
+**Basic**, one agent (the `solo` agent) writes `task.md`, then the tests and the code, in one
+pass, and runs the checks; it doesn't retry by itself. If anything blocks it, it writes only
+the blocking questions in `task.md` and stops, and you answer them as at any level. At
+**Reviewer**, a second agent (the code critic) then reviews the change once, and the solo agent
+gets one pass at what it found. Basic and Reviewer don't write the tests before the code, which
+is the price of one agent; the checks still decide. At **Tests**, the test author and the coder each loop on the
 checks alone (no critic), up to the same round caps; then the code critic reviews the whole
 change once. Anything still open after a stage's cap, or blocking in that review, goes back to
 the author for one final pass (there's no arbiter, so nothing is dismissed), and the checks
@@ -124,8 +128,11 @@ front matter, or `[pipeline] level` in `pipeline.toml` (in that order of precede
 The **security scan** (semgrep by default) is its own switch: on by default at Full only. Turn
 it on or off for a run with `--security-scan` / `--no-security-scan` (or `security_scan:` in
 front matter, or `[pipeline] security_scan`). Below Full there's no security reviewer to triage
-its hits, so a failing scan counts like a failing test: the coder gets the hits and must clear
-them.
+its hits, so the run asks you the first time the scan fails ([decision
+points](#when-a-run-stops-and-asks-you)): **ignore** the hits (they're recorded as a minor
+finding, "ignored by you") or **block** (they count like a failing test: the author gets them
+and must clear them). Your choice sticks for the rest of the run. To decide up front, use
+`--scan-failures ignore|block`.
 
 Which of the design rules each level keeps:
 
@@ -276,11 +283,14 @@ git -C path/to/project merge advpipe/<branch>       # accept it
 
 | Section | Meaning |
 |---|---|
+| **Level** | The run's level, how many agents it used, whether the security scan was on, and a list of what that level doesn't do ("Not done at this level"). A `full` run with the scan on just says `full`. |
 | **Status** | `complete`: all checks pass and no blocking problems are open. `needs_human`: something needs you (see below). `budget_exceeded` or `error`: the run stopped early and can usually be [resumed](#commands). |
 | **Rounds used** | How many back-and-forth rounds each stage needed. Many rounds is a hint to look closer. |
 | **Open blocking findings** | Problems that weren't resolved. Empty on a `complete` run. |
 | **Minor findings** | Non-blocking suggestions that were deliberately not acted on. Worth skimming. |
 | **Arbiter rulings** | Which disputes were settled and why. |
+| **Questions and answers** | Each blocking question, the pass that asked it, and its answer. Answers the agent chose because you picked Bypass are marked "agent's best judgement" with the agent's reason. |
+| **Decisions** | Every time the run stopped to ask you (failing checks, security scan hits, *Begin work?*): what it asked, what you chose and your note, and, if you took over, that the branch has the work as it was. Security scan hits you ignored are also under Minor findings, marked "ignored by you". |
 | **Cost by stage** | Agent calls, dollars and share of the total for each stage. |
 | **Notes** | E.g. "security scanner not run", or that a run was resumed. |
 
@@ -289,8 +299,35 @@ git -C path/to/project merge advpipe/<branch>       # accept it
   [`advpipe answer <run-id>`](#advpipe-answer) (or on the run's page in the web UI), and the
   same run carries on: the spec writer revises `task.md` with your answers, then tests, code
   and review run as usual.
-- **Checks still failed after the arbiter's final fix pass.** Look at the branch: the remaining
-  work is often small.
+- **Checks still failed after everything the level does on its own** (the stage's rounds, the
+  arbiter's rulings and a final fix pass; at Basic and Reviewer, right after the solo agent's
+  pass). The run stops and asks you: another fix pass, or take over. See
+  [When a run stops and asks you](#when-a-run-stops-and-asks-you).
+- **The security scan reported issues** below Full: ignore them or block. Same section.
+- **The spec is still blocked after its last pass:** *Begin work?*, same section.
+
+### When a run stops and asks you
+
+Some stops need a person's call, so the run stops (status `needs_human`), leaves its work
+exactly as it is, and asks. There are three, and a run never makes the choice itself:
+
+| It asks | When | Your choices |
+|---|---|---|
+| **Failing checks** | tests, types or lint are still red after everything the level does by itself | `fix`: one more pass by the stage's author, with the failing output and a note from you if you give one (up to `max_fix_passes`, default 3, per run) · `takeover`: advpipe commits the work to the branch ("work in progress, handed over") and removes the working copy, so you can finish it by hand |
+| **Security scan hits** (below Full) | the scan failed and the policy is `ask` | `ignore`: carry on, hits recorded as minor findings "ignored by you" · `block`: treat the hits like a failing test |
+| **Begin work?** | the spec is still blocked after its last pass | `begin`: the agent decides those questions, and any later one · `stop`: end the run |
+
+The summary line, `advpipe status <run-id>` and the report show what's asked and the command for
+each choice. A foreground `advpipe run` in a terminal asks you right there (or "later", which
+leaves the run waiting, as a `--detach`ed run does). Otherwise:
+
+```sh
+advpipe decide <run-id> fix --note "keep the public signature"
+advpipe decide <run-id> takeover
+```
+
+See [`advpipe decide`](#advpipe-decide). In the web UI the run shows as *needs a decision*, with
+a panel on its page for each of these (see [A run's page](#a-runs-page)).
 
 **Merging:** if you're happy with the branch, merge it the way you normally would. You may want
 to delete `task.md` first, or keep it as documentation.
@@ -325,9 +362,12 @@ The **Runs** page lists every run in the repo, newest first, with its status, st
 cost (against the budget while it's running) and age.
 It refreshes itself every few seconds, so runs started from a terminal (or with `--detach`) show
 up and move along by themselves. Hover over a status to see what it means. Filters show all
-runs, running ones, ones that need you (`needs you`, `needs answers`, `stopped`, `over
-budget`, `error`), or complete ones. `needs answers` is a run whose spec stopped on blocking
-questions: answer them on its page.
+runs, running ones, ones that need you (`needs you`, `needs answers`, `needs a decision`,
+`stopped`, `over budget`, `error`), or complete ones. `needs answers` is a run whose spec stopped
+on blocking questions: answer them on its page. `needs a decision` is a run waiting at a
+[decision point](#when-a-run-stops-and-asks-you): choose on its page. `handed over` and `ended`
+are runs you took over or stopped; they need nothing more. Each row shows the run's **level**
+(`Basic (1 of 5)` ... `Full (5 of 5)`).
 
 ### A run's page
 
@@ -337,11 +377,23 @@ Click a run to open its page:
 
 - **Header:** status (hover for what it means), stage, cost against the budget, time, and the
   branch with a copy button. If the run needs you, *What's left open* lists the findings.
+- **Level:** the run's level, whether the security scan is on, and (folded away) what that level
+  doesn't do.
 - **Answer the spec's questions:** for a run that *needs answers*, a form with a box per
   blocking question. *Save answers and continue* runs `advpipe answer ... --detach`: the same
-  run carries on in the background, starting with the spec writer revising `task.md` with your
-  answers (see [`advpipe answer`](#advpipe-answer)). The SPEC step then shows each spec pass
-  with the questions it asked and your answers.
+  run carries on in the background, starting with the spec writer (at Basic and Reviewer, the
+  solo agent) revising `task.md` with your answers (see [`advpipe answer`](#advpipe-answer)).
+  Each question also has a **Let the agent decide** box (`--bypass=Q2`), and **Bypass all and
+  continue** hands every question to the agent (a ticked box, or that button, wins over text
+  left in an answer box). The agent's answers show with an *agent's best judgement* badge and
+  its reason, on the SPEC (or SOLO) step and on the Spec & context tab. The SPEC step shows each
+  spec pass with the questions it asked and the answers.
+- **Decision panel:** for a run *needing a decision*, what's asked, the failing output or scan
+  hits, and the choices, which run `advpipe decide <id> CHOICE --detach`: *Another fix pass*
+  (with a note box, "fix pass N of 3") or *I'll take over*; *Ignore and continue* or *Block* for
+  scan hits; *Begin work* or *Stop here* at the spec-pass limit. *I'll take over* and *Stop here*
+  end the run, so they open a confirmation page that says exactly what happens first. A run you
+  took over shows as *handed over*, with the commands to check its branch out.
 - **Actions:** buttons for what can be done with the run as it is now (see *Starting and
   managing runs* below): *Cancel run* while it's running; *Resume* for a stopped, failed or
   over-budget run; *Clean up…* for any run that isn't running or complete.
@@ -350,13 +402,18 @@ Click a run to open its page:
   clean up. The UI never merges: those commands are for you to run.
 - **Log:** the run's progress lines. While the run is going, new lines appear as they happen,
   and the header and timeline update by themselves.
-- **Timeline:** SPEC → TESTS → CODE → REVIEW → ARBITER → FINAL CHECKS, each marked done, in
-  progress, stopped here, not yet, or not needed. Open a step to see its rounds: what the
-  author replied, the check results (with output), the exact diff the critic judged, and the
-  critic's verdict with its findings. SPEC also shows `task.md`; ARBITER shows its rulings.
+- **Timeline:** the steps of the run's level (all of SPEC → TESTS → CODE → REVIEW → ARBITER →
+  FINAL CHECKS at Full; SOLO → FINAL CHECKS at Basic), each marked done, in progress, stopped
+  here, not yet, or not needed. Open a step to see its rounds: what the author replied, the check
+  results (with output), the exact diff the critic judged, and the critic's verdict with its
+  findings (a level without critics says "No critic at this level"). SPEC and SOLO also show
+  `task.md`; ARBITER shows its rulings; a fix pass you asked for, and each decision you made, are
+  panels in the step where the run stopped.
 - **Report:** `report.md`, once the run has finished.
 
-![A run that needs answers: the spec's blocking question, with a box to answer it and continue the run](docs/screenshots/run-needs-you.png)
+![A run that needs answers: the spec's blocking question, with a box to answer it, a Bypass box, and a button to continue the run](docs/screenshots/run-needs-you.png)
+
+![A Basic run whose checks are still failing: the explanation, the failing output, a note box, and the choices to fix or take over](docs/screenshots/run-decision.png)
 
 ### Spec & context
 
@@ -388,9 +445,12 @@ git*, *uncommitted* (changed since the last commit), *ignored*, or committed.
 
 - **New** and **Edit** open an editor: the file name (new items only; folders are made as
   needed and `.md` is added), the **branch name** and **pipeline config** (saved as front
-  matter), and the markdown body, with a live preview. Checks run as you type: an empty body
-  or a field with a line break can't be saved; a config file that's missing or has errors,
-  or a branch that already exists, gets a warning.
+  matter), how runs of this item go (**level**, **security scan**, **if the scan finds issues**
+  and **don't stop for questions**: each a drop-down whose first option, *Inherit*, leaves the
+  key out of the front matter so the config decides), and the markdown body, with a live
+  preview. Checks run as you type: an empty body, a field with a line break or a setting `advpipe
+  run` wouldn't accept can't be saved; a config file that's missing or has errors, or a branch
+  that already exists, gets a warning.
 - **Save** writes the file and nothing else; committing it is up to you. If nothing changed,
   the file is left exactly as it was. If the file was changed on disk after you opened it
   (say, in your text editor), saving is refused so those changes aren't overwritten.
@@ -405,19 +465,29 @@ git*, *uncommitted* (changed since the last commit), *ignored*, or committed.
 
 ### Starting and managing runs
 
-![The New run dialog: the work item, the branch it will make, the config, and how much it can spend](docs/screenshots/new-run.png)
+![The New run dialog: the work item, the level slider, the scan and Bypass choices, what the level doesn't do, and how much it can spend](docs/screenshots/new-run.png)
 
 Every action runs the same advpipe command you'd type, in the background, so the run carries
 on if you close the page or stop the UI.
 
 - **New run** (on the runs page, or *Run* on a work item) opens a dialog: pick a work item, or
   type a one-off task (it isn't saved), and optionally a **branch name** and **config** that
-  override the item's front matter. Before you start, it shows the branch the run will make,
+  override the item's front matter. **How much checking** is a slider from *Basic* to *Full*
+  (the [levels](#levels-how-much-checking-a-run-gets)), starting at the level the work item's
+  front matter, else the config, else Full gives; under it, the **security scan** (*Default*,
+  *On*, *Off*), what to do **if it finds issues** below Full (*Ask me*, *Ignore*, *Block*) and
+  **Don't stop for questions** (Bypass up front, off by default: the agent answers every blocking
+  question itself). Moving the slider updates the summary under the form: the level's name,
+  its agents, how many agent calls it makes before it asks you, the scan setting, and what that
+  level doesn't do. Before you start, the summary also shows the branch the run will make,
   which config it uses, problems (a missing or invalid config, an item that doesn't parse) and
   **"This can spend up to $X"**: the config's `budget_usd_per_task`. *Start* runs
-  `advpipe run --item FILE --detach` (or `advpipe run --detach -- "TASK"`) and opens the run's
-  page. If the config changed after the dialog showed its budget, it refuses and shows the new
-  one, so a run never starts on a budget you didn't see. A run that fails before it gets going
+  `advpipe run --item FILE --level LEVEL --detach` (or `advpipe run --detach ... -- "TASK"`),
+  adding `--security-scan`/`--no-security-scan`, `--scan-failures` and `--bypass-questions` only
+  for choices you made, and opens the run's page. If the config changed after the dialog showed
+  its budget, or the level, scan, scan policy or Bypass you submitted isn't what the summary
+  showed a moment ago, it refuses and shows the new one, so a run never starts on settings you
+  didn't see. A run that fails before it gets going
   (say, its config can't be read) shows its output there instead.
 - **Cancel run** asks first, then runs `advpipe cancel`: the run stops at its next safe point
   and can be resumed.
@@ -436,7 +506,9 @@ on if you close the page or stop the UI.
 ![The Help page](docs/screenshots/help.png)
 
 - **Help** (top bar) is the pipeline in plain words. Its tables come from the code, so the round
-  limits, budget and models it quotes are advpipe's real defaults.
+  limits, budget, models, and the levels (agents, steps, call counts, what each drops, and the
+  design rules level by level) it quotes are advpipe's real ones. It also explains when a run
+  asks you, and every status.
 - **Theme:** the UI follows your system's light or dark setting. The *Theme* button in the top
   bar switches between system, dark and light; the choice is remembered in this browser.
 - **Keyboard:** everything works without a mouse. The first <kbd>Tab</kbd> on a page offers
@@ -472,13 +544,12 @@ advpipe run --from-file tasks.txt --parallel 3 [--repo PATH]
   If that branch already exists, `-2`, `-3`, ... is appended.
 - `--level LEVEL`: how much checking, by name or number: `basic` (1), `reviewer` (2), `tests`
   (3), `adversarial` (4) or `full` (5). See [levels](#levels-how-much-checking-a-run-gets).
-  Default: the work item's front matter, else `[pipeline] level`, else `full`. Only
-  `tests`, `adversarial` and `full` can be run so far.
+  Default: the work item's front matter, else `[pipeline] level`, else `full`.
 - `--security-scan` / `--no-security-scan`: run the security scan or not. Default: the work
   item's front matter, else `[pipeline] security_scan`, else on at `full` only.
-- `--scan-failures ask|ignore|block`: below `full`, what a failing security scan means. For
-  now every choice blocks (the hits go to the coder like a failing test); asking you, and
-  ignoring hits, come later. A run started with `ask` or `ignore` notes that in its report.
+- `--scan-failures ask|ignore|block`: below `full`, what a failing security scan means: `ask`
+  (the default: the run stops and asks you the first time), `ignore` (record the hits as a minor
+  finding "ignored by you" and carry on) or `block` (treat them like a failing test).
 - `--bypass-questions` / `--no-bypass-questions`: never stop for blocking questions; the agent
   answers them itself with its best judgement (see [Bypass](#bypass-let-the-agent-decide)).
   Default: the work item's front matter, else `[pipeline] bypass_questions`, else off. Rarely
@@ -538,7 +609,10 @@ advpipe status <run-id> [--repo PATH]    # details of one run
 ```
 
 Shows status, current stage and round, level and security scan, cost so far, and which
-stages are finished. You can run
+stages are finished. It also shows what you've decided: the questions with their answers (marked
+when the agent answered them under Bypass), each decision you made, what the scan policy is, and
+how many security scan findings you ignored. A run waiting on you shows the choices and their
+commands. You can run
 it in a second terminal while a run is going; `run.json` is updated after every agent call.
 
 ### `advpipe report`
@@ -597,6 +671,7 @@ in `advpipe status <run-id>` and in the report.
   in `task.md`'s `## Answers` section (*Answer (agent's best judgement)*, with the reason), in
   the report and in `advpipe status`. Bypass covers only the stop it was chosen at: if the
   revision asks new blocking questions, the run stops again, and you can answer or Bypass those.
+  At Basic and Reviewer the solo agent answers its own questions.
   The reply itself is saved as `spec/pass-N/bypass.json` in the run directory and is never shown
   to later agents; they see only the `## Answers` section.
 - **Bypass up front.** `advpipe run --bypass-questions` (or `bypass_questions: yes` in a work
@@ -607,10 +682,40 @@ in `advpipe status <run-id>` and in the report.
 - **More questions?** The revised spec may ask a new blocking question (numbered on from the
   last one, so `Q3` after `Q1` and `Q2`); answer it the same way. A spec gets at most
   `max_rounds_spec` passes (default 3: the first and two rounds of answers). If it's still
-  blocked after that, the run stops for good: reword the work item and start a new run.
+  blocked after that, the run doesn't ask again: it asks *Begin work?*
+  ([`advpipe decide`](#when-a-run-stops-and-asks-you)): `begin` lets the agent decide those
+  questions, and any later one, and the run goes on; `stop` ends it (reword the work item and
+  start a new run).
 - It refuses a run that isn't waiting on answers, one that's running, and one whose branch was
   deleted (e.g. by `advpipe clean`). Exit codes are those of `advpipe resume`; 2 if the answers
   were refused.
+
+### `advpipe decide`
+
+```sh
+advpipe decide <run-id> [CHOICE] [--repo PATH] [--note TEXT]
+    [--no-resume] [--detach] [--budget USD] [--config FILE] [--keep-worktree] [--quiet]
+```
+
+Choose what a run does at the point where it stopped to ask you (see [When a run stops and asks
+you](#when-a-run-stops-and-asks-you)). `CHOICE` is `fix` or `takeover` for failing checks,
+`ignore` or `block` for scan hits, `begin` or `stop` for *Begin work?*. Without it, in a
+terminal it asks; otherwise it prints the choices and exits 2.
+
+- `fix` runs one more pass by the author of the stage that was red, with the failing checks and
+  your `--note` (up to 8,000 characters, passed along as you wrote it); there's no critic
+  round afterwards, the checks decide. Green: the run carries on from that stage. Red: it
+  asks again. After `max_fix_passes` (default 3) fix passes, `fix` is refused: take over, or
+  start a new run.
+- `takeover` and `stop` end the run on the spot and print what's where (for `takeover`:
+  `git switch advpipe/...`, and the checks to run). The run can't be resumed afterwards;
+  `advpipe clean` follows its usual rules.
+- The other choices resume the same run exactly as `advpipe resume` does (so `--detach`,
+  `--budget`, `--config`, `--keep-worktree` and the exit codes are the same; `--no-resume` only
+  saves the choice). The work in the working copy is kept as it was.
+- It refuses a run that isn't waiting for a decision, a choice that isn't one of that
+  decision's, a note on any choice but `fix`, a run being driven by a live process, and a run
+  whose branch was deleted. `advpipe resume` on a run that's waiting names this command.
 
 ### `advpipe resume`
 
@@ -622,9 +727,9 @@ Continue a run that was interrupted (Ctrl-C, crash, closed laptop), stopped by a
 out of budget. It picks up at the first stage that didn't finish; finished stages aren't redone
 or paid for again. Use `--budget` to raise the limit after `budget_exceeded`; the run keeps the
 new limit (it's saved in the run's `config.json`). Completed runs and `needs_human` runs can't
-be resumed, except a run whose spec stopped on blocking questions: answer them with
-[`advpipe answer`](#advpipe-answer), which resumes it for you (or answer with `--no-resume`,
-then `advpipe resume`). `--detach` resumes in the background, as with
+be resumed, except a run that stopped on blocking questions or at a decision point: answer them
+with [`advpipe answer`](#advpipe-answer) or choose with [`advpipe decide`](#advpipe-decide),
+which resume it for you (or use `--no-resume`, then `advpipe resume`). `--detach` resumes in the background, as with
 `advpipe run --detach`: it checks the run can be resumed, prints the run id and returns.
 A resumed run keeps its level and security-scan setting; a `--config` whose `[pipeline]` sets
 different ones is refused.
@@ -698,7 +803,7 @@ advpipe levels [--repo PATH] [--config FILE]
 Prints the five [levels](#levels-how-much-checking-a-run-gets): what each runs, its agents, how
 many agent calls it makes if all goes well and at most (with your config's round caps), whether
 the security scan is on by default, and what it leaves out compared with `full`. It marks your
-config's default level and the levels that can't be run yet. Read-only; no API calls.
+config's default level. Read-only; no API calls.
 
 ## Configuration
 
@@ -718,7 +823,7 @@ max_rounds_code     = 3      # coder ⇄ critic rounds
 max_turns_per_agent = 40     # steps a single agent may take
 budget_usd_per_task = 15.0   # hard stop for the whole run
 gate_timeout_s      = 600    # max seconds per check command
-max_fix_passes      = 3      # extra fix passes you can ask for when checks stay red (planned)
+max_fix_passes      = 3      # extra fix passes you can ask for when checks stay red
 
 [gates]
 # Commands run from the project root. [] = skip this check.
@@ -771,8 +876,9 @@ projects. Lowering `max_rounds_*` or pointing `author` at a cheaper model are th
 
 advpipe trades money and time for confidence. That's a bad trade for:
 
-- **Routine changes:** renames, dependency bumps, copy edits, config tweaks. Use a single agent
-  plus one quick review, or just do it yourself.
+- **Routine changes:** renames, dependency bumps, copy edits, config tweaks. Use
+  `--level basic` (one agent) or `--level reviewer` (one agent plus one review), or just do it
+  yourself. The checks still run.
 - **Exploratory work** where you don't know what you want yet. The pipeline needs a task that
   can be pinned down to acceptance criteria.
 - **Projects without a usable test command.** The whole design leans on tests as ground truth.
@@ -810,7 +916,7 @@ Read this before pointing advpipe at anything important.
 This repository also contains a version of the pipeline that runs *inside* an interactive
 [Claude Code](https://code.claude.com) session, with no install:
 
-- `.claude/agents/`: the eight roles as Claude Code subagents
+- `.claude/agents/`: the nine roles as Claude Code subagents (the eight pipeline roles and `solo`)
 - `.claude/skills/adversarial-build/`: the procedure, as a skill
 
 Copy both folders into your project's `.claude/` directory (or your personal `~/.claude/`),
@@ -822,6 +928,23 @@ restart Claude Code, and ask:
 
 If the spec has blocking questions, Claude asks you in the session, then has the spec writer
 revise `task.md` with your answers and carries on.
+
+The skill has the same **levels** as the CLI. Name one, the security scan, or "don't ask me
+questions" in the request:
+
+```
+/adversarial-build --level basic fix the typo in the refund error message
+/adversarial-build --level adversarial with the security scan: add a refund window
+```
+
+Without a level it runs `full` with the scan on. Claude never picks or changes the level, and
+says once if the work item looks bigger than the one you chose. It stops and asks you, in the
+session, at the same places as the CLI: blocking questions (answer them, or say **bypass** and
+the agent decides, marked "agent's best judgement" in `task.md`), *Begin work?* after the third
+spec pass, failing checks the level couldn't fix (another fix pass with an optional note, at
+most 3, or take over), and security scan hits below Full (ignore or block). Its final summary
+states the level, the scan setting, what the level didn't do, every bypassed question and every
+decision you made. A usage limit inside a Claude Code session is Claude Code's own business.
 
 The trade-off: in this version, Claude follows the procedure as instructions, so the rules are
 only as reliable as the model's instruction-following. The `advpipe` CLI enforces them in code.
@@ -876,8 +999,11 @@ test files (check `testpaths` or the equivalent in your test runner's config).
 
 **The run stopped at the spec with `needs_human`**: the spec writer found a question it
 shouldn't guess the answer to. Answer it with `advpipe answer <run-id>`, and the run carries on.
-If it says the spec is still blocked after its last pass, put the answers in your work item and
-start a new run.
+If the spec is still blocked after its last pass, the run asks *Begin work?*: `advpipe decide
+<run-id> begin` lets the agent decide the rest; `stop` ends the run.
+
+**The run says it's waiting for a decision**: it stopped at a decision point (failing checks,
+scan hits, or *Begin work?*). Run `advpipe decide <run-id>` to see the choices.
 
 **`budget_exceeded`**: `advpipe resume <run-id> --budget 30` continues where it stopped.
 
@@ -889,9 +1015,6 @@ and `advpipe status <run-id>`.
 
 **`unknown key '...' (known keys: name, config, level, security_scan, scan_failures, bypass_questions)`**: a
 work-item file's front matter may only set those keys.
-
-**"level X isn't available yet"**: only `tests`, `adversarial` and `full` can be run so far. Change
-`--level`, the work item's `level:` or `[pipeline] level`.
 
 **"a resumed run keeps its level"**: `advpipe resume --config` was given a config whose
 `[pipeline]` sets a different level or security scan than the run started with. Leave those out,

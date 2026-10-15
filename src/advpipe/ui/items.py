@@ -14,14 +14,17 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from advpipe.config import load_config
+from advpipe.levels import parse_level
 from advpipe.ui.runs import RunRow, load_runs, title_of
 from advpipe.workitem import (
     RUN_KEYS,
+    SCAN_FAILURES,
     WorkItem,
     WorkItemError,
     format_work_item,
     parse_work_item,
     salvage_work_item,
+    switch,
 )
 from advpipe.workspace import BRANCH_PREFIX, GitError, branch_exists, git, slugify
 
@@ -257,7 +260,11 @@ def config_files(repo: Path) -> list[str]:
 
 @dataclass(frozen=True)
 class Draft:
-    """What the editor shows: the fields as text ('' when unset)."""
+    """What the editor shows: the fields as text ('' when unset).
+
+    The run settings (``RUN_KEYS``) are ``''`` when the file leaves them out, so the run
+    inherits them from the config, and ``None`` when the form didn't carry them at all: saving
+    then keeps whatever the file has."""
 
     rel: str
     name: str = ""
@@ -265,15 +272,51 @@ class Draft:
     body: str = ""
     base: str = ""  # digest of the file as loaded; '' for a new item
     problem: str | None = None  # why the file as loaded doesn't parse
+    level: str | None = ""
+    security_scan: str | None = ""
+    scan_failures: str | None = ""
+    bypass_questions: str | None = ""
 
     def item(self) -> WorkItem:
-        return WorkItem(body=self.body, name=self.name or None, config=self.config or None)
+        return WorkItem(
+            body=self.body,
+            name=self.name or None,
+            config=self.config or None,
+            level=self.level or None,
+            security_scan=self.security_scan or None,
+            scan_failures=self.scan_failures or None,
+            bypass_questions=self.bypass_questions or None,
+        )
+
+    def setting(self, key: str) -> str:
+        """A run setting as the form shows it ('' when inherited or not in the form)."""
+        return getattr(self, key) or ""
 
 
-def from_form(rel: str, name: str, config: str, body: str, base: str = "") -> Draft:
-    """A draft from form fields. Browsers send textarea lines ending in CRLF."""
+def from_form(
+    rel: str,
+    name: str,
+    config: str,
+    body: str,
+    base: str = "",
+    settings: dict[str, str | None] | None = None,
+) -> Draft:
+    """A draft from form fields. Browsers send textarea lines ending in CRLF. ``settings``: the
+    run settings the form sent, by front-matter key (None, or a key left out: not in the form)."""
     body = body.replace("\r\n", "\n").replace("\r", "\n").strip()
-    return Draft(rel=rel, name=name.strip(), config=config.strip(), body=body, base=base)
+    given = {
+        key: (value.strip() if value is not None else None)
+        for key, value in (settings or {}).items()
+        if key in RUN_KEYS
+    }
+    return Draft(
+        rel=rel,
+        name=name.strip(),
+        config=config.strip(),
+        body=body,
+        base=base,
+        **{key: given.get(key) for key in RUN_KEYS},
+    )
 
 
 def read_draft(items_dir: Path, rel: str) -> Draft:
@@ -291,8 +334,23 @@ def read_draft(items_dir: Path, rel: str) -> Draft:
     except WorkItemError as e:
         fields, body = salvage_work_item(text)
         name, config = fields.get("name", ""), fields.get("config", "")
-        return Draft(rel, name, config, body, digest(data), problem=str(e))
-    return Draft(rel, item.name or "", item.config or "", item.body, digest(data))
+        return Draft(
+            rel,
+            name,
+            config,
+            body,
+            digest(data),
+            problem=str(e),
+            **{key: fields.get(key, "") for key in RUN_KEYS},
+        )
+    return Draft(
+        rel,
+        item.name or "",
+        item.config or "",
+        item.body,
+        digest(data),
+        **{key: getattr(item, key) or "" for key in RUN_KEYS},
+    )
 
 
 @dataclass(frozen=True)
@@ -320,6 +378,7 @@ def check_draft(repo: Path, draft: Draft) -> Checked:
     for key, value in (("branch name", draft.name), ("config", draft.config)):
         if "\n" in value or "\r" in value:
             checks.append(Check("error", f"The {key} must be a single line."))
+    checks.extend(_setting_checks(draft))
     branch = BRANCH_PREFIX + slugify(draft.name or draft.body) if draft.name or draft.body else ""
     if branch and branch_exists(repo, branch):
         checks.append(
@@ -331,6 +390,46 @@ def check_draft(repo: Path, draft: Draft) -> Checked:
         )
     checks.extend(_config_checks(repo, draft.config))
     return Checked(checks, branch)
+
+
+def _setting_checks(draft: Draft) -> list[Check]:
+    """The run settings must be values ``advpipe run`` accepts (it would reject the file)."""
+    checks: list[Check] = []
+    for key, label, valid in (
+        ("level", "level", parse_level),
+        ("security_scan", "security scan", switch),
+        ("scan_failures", "scan policy", _scan_failures),
+        ("bypass_questions", "don't-stop-for-questions setting", switch),
+    ):
+        value = draft.setting(key)
+        if not value:
+            continue
+        try:
+            valid(value)
+        except ValueError as e:
+            checks.append(Check("error", f"The {label}: {e}."))
+    if draft.setting("bypass_questions") and switch_is_yes(draft.setting("bypass_questions")):
+        checks.append(
+            Check(
+                "warning",
+                "Runs of this item never stop for blocking questions: the agent answers them "
+                "itself. Rarely the right choice.",
+            )
+        )
+    return checks
+
+
+def switch_is_yes(value: str) -> bool:
+    try:
+        return switch(value)
+    except ValueError:
+        return False
+
+
+def _scan_failures(value: str) -> str:
+    if value not in SCAN_FAILURES:
+        raise ValueError(f"expected one of {', '.join(SCAN_FAILURES)}, got {value!r}")
+    return value
 
 
 def _config_checks(repo: Path, config: str) -> list[Check]:
@@ -388,8 +487,9 @@ def save_item(items_dir: Path, draft: Draft) -> bool:
         on_disk = None
     item = draft.item()
     if on_disk is not None:
-        # The editor has no fields for the run settings yet: keep the file's.
-        item = replace(item, **{key: getattr(on_disk, key) for key in RUN_KEYS})
+        # A form that didn't carry a run setting (None) keeps the file's.
+        keep = {key: getattr(on_disk, key) for key in RUN_KEYS if getattr(draft, key) is None}
+        item = replace(item, **keep)
         if on_disk == item:
             return False
     path.write_bytes(_encode_item(item))

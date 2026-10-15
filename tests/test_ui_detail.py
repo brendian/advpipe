@@ -141,14 +141,15 @@ async def test_arbiter_and_final_pass(config: Config, target_repo: Path) -> None
     # Stopped during the arbiter's final pass, which was called from the code stage.
     assert steps["SPEC"] == steps["TESTS"] == "done"
     assert steps["CODE"] == steps["ARBITER"] == "stopped here"
-    assert steps["REVIEW"] == steps["FINAL CHECKS"] == "not reached"
+    # The run waits at a decision point (the checks are still red): it can carry on from here.
+    assert steps["REVIEW"] == steps["FINAL CHECKS"] == "not yet"
     assert "3 of 3 rounds" in page
     for n in (1, 2, 3):
         assert f"problem {n}" in page
     assert "<code>C3-F1</code>" in page and ">fix</span>" in page
     assert "Final fix pass (code)" in page and "broke it" in page
     assert "Checks after the fix" in page
-    assert "G-test" in page.split("What's left open")[1]  # the failing gate is left open
+    assert "G-test" in page.split('id="decision"')[1]  # the failing gate is what's asked about
 
 
 # --------------------------------------------------------------------------- every status

@@ -85,24 +85,26 @@ orchestrator reads (`levels.SHAPES`):
 | 4 | `adversarial` | no | yes | none | yes | off | SPEC → TESTS ⇄ → CODE ⇄ → ARBITER → FINAL CHECKS |
 | 5 | `full` | no | yes | full | yes | on | the pipeline above |
 
-**Built so far: `tests`, `adversarial` and `full`.** `basic` and `reviewer` are accepted in
-config and front matter but refused when a run starts (`levels.check_available`, called by
-`advpipe run` and `Orchestrator._new_state`). Everything else said about a level (its roles,
-steps, the safeguards it drops, its agent-call bounds, its label) is derived from `SHAPES` in
-`levels.py`, so the CLI, the report and later the UI can't drift apart:
+**All five levels run,** and the web UI shows them: the New run dialog's slider, the level on
+every run, the solo stage and single review in the timeline, and decision panels (see
+[The web UI](#the-web-ui)). Everything said about a level (its roles, steps, the safeguards it
+drops, its agent-call bounds, its label) is derived from `SHAPES` in `levels.py`, so the CLI,
+the report and the UI can't drift apart:
 
 - `parse_level` (a name or 1-5), `level_number`, `LEVEL_ORDER`, `LEVEL_INFO`.
-- `roles_for(level)`: the roles a run can call, as `Role` values (`"solo"` for levels 1 and 2:
-  `Role.SOLO` arrives with the solo stage).
+- `roles_for(level)`: the roles a run can call, as `Role` members (`Role.SOLO` for levels 1
+  and 2, the one agent that does everything).
 - `steps_for(level)`: the timeline steps (`Stage.SOLO` already exists for this).
 - `dropped_safeguards(level, scan)`: plain-language lines for the report and `advpipe levels`;
   empty for `full` with the scan on.
 - `max_agent_calls(level, limits)`: (happy path, worst case) agent calls between two person
-  decisions. Full: 7 and 30 with the default caps; Adversarial: 5 and 23; Tests: 4 and 11. The worst case counts
+  decisions. Full: 7 and 30 with the default caps; Adversarial: 5 and 23; Tests: 4 and 11;
+  Reviewer: 2 and 4; Basic: 1 and 1. The worst case counts
   one JSON retry per critic, reviewer and arbiter call, the test-fix pass, and the arbiter and
   final author pass after each stage's cap. `tests/test_levels.py` (Full, Adversarial) and
-  `tests/test_tests_level.py` (Tests) run a script that fails as late as it can at every stage
-  and check the count matches, so the formula can't drift.
+  `tests/test_tests_level.py` (Tests) and `tests/test_solo.py` (Basic, Reviewer) run a script
+  that fails as late as it can at every stage and check the count matches, so the formula can't
+  drift; `tests/test_level_invariants.py` runs the happy path and a red path at all five.
 - `level_tag(state)`: `"adversarial"`, `"full, no scan"`, ... for the summary line and the
   `run_start` message; empty for `full` with the scan on, so those read as they always have.
 
@@ -118,12 +120,24 @@ security_scan` → the level's default (`Shape.security_scan`: on at `full` only
 reads it (None, in an old run, means the level's default). At `full` the review stage runs the
 scanner for the security reviewer, as before; with the scan off it's skipped there ("turned off
 for this run") and the security reviewer works from the diff alone. Below `full`, with the scan
-on, `stages.run_gate_names(state)` adds `security` to the checks run after every code round,
-after final passes and at the final gates, and to the gate commands the coder is given. A
-failure is then an ordinary gate finding, so it blocks like a failing test
-(`RunState.scan_policy = "block"`). The policies `ask` and `ignore` are accepted but fall back
-to `block` with a note until decision points exist. An uninstalled scanner is skipped at every
-level, and the report says so once (`note_scanner_skipped`).
+on, `stages.run_gate_names(state)` adds `security` to the checks run after every code round (or
+solo pass), after final passes and at the final gates, and to the gate commands the author is
+given. There's no security reviewer to say whether a hit is real, so what a failure means is the
+run's **scan policy** (`RunState.scan_policy`, from `--scan-failures` / front matter /
+`[pipeline] scan_failures`), applied in one place, `stages.checked_findings`:
+
+- `ask` (the default): the first failing scan stops the run at a `scan_hits` [decision
+  point](#decision-points): *ignore* or *block*. The choice sticks for the rest of the run, so
+  it's asked at most once. It's raised as `decisions.DecisionNeeded` from wherever the gates ran
+  and caught in `Orchestrator.run`, like `BudgetExceeded`.
+- `block`: the hits are blocking gate findings, like a failing test. The author gets them, the
+  scan reruns, and a clean scan lets the run go on. Hits the author can't clear end at a
+  `red_checks` decision point.
+- `ignore`: the hits are recorded as a minor finding "ignored by you" (with the scan output),
+  and the run carries on.
+
+At `full` the scan is the security reviewer's input and is never asked about. An uninstalled
+scanner is skipped at every level, and the report says so once (`note_scanner_skipped`).
 
 **Design rules by level.** Rules 2, 4 and 6 apply at the levels that have the agents they
 govern; the default level, `full`, applies all of them:
@@ -144,12 +158,13 @@ All code is in `src/advpipe/`.
 
 | File | Responsibility | Key names |
 |---|---|---|
-| `cli.py` | Typer CLI: `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `levels`, `ui`, `gates` | `run`, `answer`, `resume`, `cancel`, `clean`, `status`, `report`, `levels`, `ui`, `gates` |
+| `cli.py` | Typer CLI: `run`, `answer`, `decide`, `resume`, `cancel`, `clean`, `status`, `report`, `levels`, `ui`, `gates` | `run`, `answer`, `decide`, `resume`, `cancel`, `clean`, `status`, `report`, `levels`, `ui`, `gates` |
 | `levels.py` | Pipeline levels as data: what each level runs, and everything derived from that | `SHAPES`, `Shape`, `parse_level`, `roles_for`, `steps_for`, `dropped_safeguards`, `max_agent_calls`, `scan_on`, `level_tag` |
+| `decisions.py` | Decision points: where a run stops and asks a person to choose; `advpipe decide` | `decide`, `CHOICES`, `awaiting_decision`, `decision_ready`, `pending_choice`, `take`, `DecisionNeeded` |
 | `answers.py` | Blocking spec questions and their answers (or Bypass: the agent decides): waiting/ready checks, recording answers, answers files, the Answers section of `task.md` | `record_answers`, `awaiting_bypass`, `awaiting_answers`, `answers_ready`, `with_answers_section`, `parse_answers_file`, `migrate` |
 | `orchestrator.py` | The state machine; resume; parallel runs | `Orchestrator`, `Orchestrator._run`, `Orchestrator._settle`, `Orchestrator.resume`, `check_same_shape`, `run_many` |
-| `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `arbiter_stage`, `final_author_pass`, `call_critic`, `bypass_questions`, `test_file_guard`, `run_gate_names`, `Context` |
-| `models.py` | Pydantic data contracts and validation rules | `Finding`, `Verdict`, `AuthorResponse`, `ArbiterRuling`, `RunState`, `Stage`, `Status`, `Level` |
+| `stages.py` | What each stage does; prompt building; JSON parsing and retry | `adversarial_stage`, `review_stage`, `single_review_stage`, `checked_findings`, `arbiter_stage`, `final_author_pass`, `call_critic`, `bypass_questions`, `test_file_guard`, `run_gate_names`, `Context` |
+| `models.py` | Pydantic data contracts and validation rules | `Finding`, `Verdict`, `AuthorResponse`, `ArbiterRuling`, `RunState`, `Decision`, `Stage`, `Status`, `Level` |
 | `runner.py` | The agent abstraction and the Claude Agent SDK implementation; role → tools/model table | `AgentRunner`, `SdkAgentRunner`, `Role`, `ROLE_TOOLS`, `ROLE_MODEL`, `build_request` |
 | `gates.py` | Runs check commands; turns failures into findings | `run_gates`, `gate_findings`, `red_gate_findings`, `GateResult` |
 | `workspace.py` | Git worktree per run; diffs; reverting files | `Workspace.create`, `.reopen`, `.remove`, `.diff`, `.changed_files`, `.restore` |
@@ -180,7 +195,15 @@ async def run(self):
 ```
 
 The `finally` block means **every run leaves a `report.md`**, including runs that crashed or
-ran out of money.
+ran out of money. Besides the level line (`runlog._level`: the level, its agent count, the scan
+setting, and "Not done at this level" from `dropped_safeguards`; just the name for `full` with
+the scan on), the report has a `## Questions and answers` section (agent answers marked, with
+their reasons) and a `## Decisions` section (`runlog._decisions`: each decision point in order,
+the explanation, the person's choice and note, a hand-over or stop line, and the number of fix
+passes). Ignored scan hits are minor findings "ignored by you", and `runlog.scan_policy_line`
+says whether the policy was chosen up front or at a decision point. `RunLog.write_state` also
+writes each decision to `decisions/N.json`, as asked and as decided. `advpipe status <id>` shows
+the same facts (`cli.status`).
 
 `_run` then does the following:
 
@@ -231,15 +254,17 @@ Answering again before resuming replaces the answers. Then:
 - A revision may ask new blocking questions: they get the next ids and the run stops again.
   One that repeats an answered question (same text, ignoring case and spacing) isn't asked
   again; a note says its answer stands. When the pass that still has blocking questions is
-  pass number `max_rounds_spec` (default 3), the run stops for good: not answerable, with a
-  note to reword the work item and start a new run.
+  pass number `max_rounds_spec` (default 3), the run doesn't ask them one more time: it stops
+  at a `spec_cap` [decision point](#decision-points), *Begin work?*, where the person chooses
+  `begin` or `stop`. The questions can no longer be answered (`advpipe answer` is refused, and
+  says so, naming `advpipe decide <id> begin`).
 - **Bypass** (docs/LEVELS_PLAN.md §3.6). `advpipe answer --bypass` (or `Q2: BYPASS` in an
   answers file, or an empty answer confirmed in the terminal) records `bypassed = True` on a
   question instead of an answer: `record_answers(..., bypass=ids)` treats it as dealt with, so
   the run is resumable (`answers_ready` also holds when a bypassed question still has no
   answer; `awaiting_bypass` lists them), and an id can't be both answered and bypassed. When
   `_spec` starts a pass it first calls `_bypass`, which calls `stages.bypass_questions`: one
-  JSON call to the role that asked (`spec-writer` here; the solo agent later), parsed with
+  JSON call to the role that asked (`spec-writer` here; the solo agent at levels 1 and 2), parsed with
   `call_json_agent` (so one retry on bad JSON) into `BypassAnswers`, charged to stage `spec`,
   with the reply saved to `spec/pass-N/bypass.json`. Files the call changed are reverted
   (`task.md` is put back exactly as it was). Each question gets `answer`, `reasoning` and
@@ -252,9 +277,13 @@ Answering again before resuming replaces the answers. Then:
   front matter, `[pipeline]`) makes `_spec` mark each new question bypassed instead
   of stopping; below the spec-pass cap it loops into the next revision, at the cap it asks the
   agent, writes the answers into `task.md` without another revision and commits. A resumed run
-  keeps the setting (`check_same_shape` refuses a config that changes it). There is no *Begin
-  work?* decision at the cap yet: without up-front Bypass, the run still stops for good there
-  (`LEVELS_PLAN.md` L3).
+  keeps the setting (`check_same_shape` refuses a config that changes it).
+- **Begin work?** (`spec_cap`, `Orchestrator._begin_spec`). `begin` sets
+  `state.bypass_questions = True` (so no later question stops the run) and marks every question
+  still pending as bypassed; the spec writer then answers them in one bypass call
+  (`spec/pass-N/bypass-begin.json`), the answers go into `task.md` without another revision
+  pass, and the spec is committed. `stop` ends the run (`ended_by = "stop"`): nothing is
+  committed, the last `task.md` stays in the run directory, and the run can't be resumed.
 - An interrupted, failed or over-budget revision leaves its answers unapplied, so a plain
   `advpipe resume` runs the revision again.
 - Runs stopped by an older advpipe keep their questions only as open findings
@@ -328,19 +357,101 @@ returns. Otherwise:
 2. If anything was ruled `fix`, `final_author_pass` gives the relevant author (test-author for
    the tests stage, coder otherwise) **one** more pass, with **no critic round** afterwards.
    Gates (and the test-file guard, for the coder) run again.
-3. If gates still fail, the run stops with `needs_human` and those failures as open findings.
+3. If gates still fail, the run stops at a `red_checks` [decision point](#decision-points)
+   (status `needs_human`, those failures as open findings): a person chooses a further fix pass
+   or taking over.
 
 At levels without an arbiter (`_settle(..., arbiter=False)`, the `tests` level), step 1 is
 done by code: every open finding is ruled `fix` with the reason "no arbiter at level tests",
 recorded in `state.rulings` (so the report shows why) and as `ruling` events, with no model call
 and no ARBITER step. The final author pass (step 2) is then told "these findings are still
 open" rather than "the arbiter ruled", and is charged to the stage being settled
-(`stage-tests`, `stage-code` or `review`) instead of `arbiter`. Step 3 is the same.
+(`stage-tests`, `stage-code`, `solo` or `review`) instead of `arbiter`. Step 3 is the same.
+At the solo levels the author is the solo agent, and the final pass is `final-pass-solo/`.
 
 ### 6. Final gates
 All gates (`run_gate_names`: plus the security scan below `full` when it's on) run one last
 time on the finished branch. Green means `complete`, and the worktree
-is removed (the branch stays). Red means `needs_human`.
+is removed (the branch stays). Red stops at a `red_checks` decision point (`needs_human`).
+
+### The solo stage (levels basic and reviewer)
+`Orchestrator._solo` runs instead of SPEC, TESTS and CODE. One agent, `solo` (the author model,
+writer tools, prompt `prompts/solo.md`), writes `task.md` first, then the tests and the code,
+and runs the checks. One call per entry, no automatic retries:
+
+- **Blocking questions.** `task.md` goes through `blocking_open_questions` and the same
+  recording as the spec stage (`Orchestrator._question_stop`, shared with `_spec`): the
+  questions get ids, `state.spec_passes` counts the pass, and **everything except `task.md` is
+  reverted**, because the agent wasn't allowed to write code yet. The run stops for answers, or
+  at *Begin work?* after `max_rounds_spec` passes, exactly as at the spec stage; `advpipe
+  answer` works unchanged (`answers.spec_stage(state)` says the stage is SOLO and the commit
+  key `solo`, wherever `answers.py` and the UI used to assume SPEC and `spec`). Answers (or,
+  under Bypass, the solo agent's own, from `bypass_questions` called with `Role.SOLO`) come
+  back in a revision pass (`solo_revision_prompt`: previous `task.md` from the run directory
+  and the Q&A), which does the work. With Bypass on and the cap reached, the solo agent gets one
+  more pass past the cap, because the pass that asked did none of the work; if that pass still
+  has questions they are answered by a bypass call and the checks decide.
+- **Checks.** `task.md` must exist (else a blocking `guard:task-md` finding), then the gates
+  (`run_gate_names`) run. There's no test-file guard (one agent owns both) and no red gate
+  (tests and code arrive together). Red goes straight to a `red_checks` decision point.
+- **Commit** when the checks pass: `state.commits["solo"]`. Files:
+  `stage-solo/pass-N/{author.txt, diff.patch, gates.json, task.md}` (plus `answers.json`,
+  `bypass.json`, and `request.json` for a pass a person asked for).
+
+At **Reviewer** the REVIEW step follows: `single_review_stage` (one `code-critic` pass over
+the whole change, as at Tests), and blocking findings go to one automatic pass by `solo`
+(`_settle(..., Role.SOLO, "solo", arbiter=False)`), then the gates; still red asks.
+
+## Decision points
+
+A **decision point** is a stop where the run waits for a person to choose one of two things
+(`decisions.py`, plan: [LEVELS_PLAN.md](LEVELS_PLAN.md) §3.5). It has status `needs_human`, like
+every stop, so `run.json` and scripts that look for that status keep working;
+`RunState.decisions` (a list of `Decision`, the last being the open one) says what's asked.
+Only a person picks a choice: `advpipe decide <run-id> CHOICE [--note TEXT]`.
+
+| Kind | When | Choices |
+|---|---|---|
+| `red_checks` | checks are red and the pipeline has nothing automatic left to try | `fix` (one more pass, optional note) · `takeover` |
+| `scan_hits` | the security scan failed below `full` and the policy is `ask` | `ignore` · `block` |
+| `spec_cap` | the last allowed spec (or solo) pass still has blocking questions | `begin` · `stop` |
+
+- **Where `red_checks` happens** (`Orchestrator._ask_red`): after the stop's own machinery has
+  run. At levels 3 to 5 that's the stage's round cap, then `_settle` (the arbiter where the
+  level has one, then the final author pass); also red final gates. At levels 1 and 2 it's
+  right after the solo pass (no retry), after Reviewer's review-fix pass, and at the final
+  gates. The decision's `stage` is the stage being settled (for a settle that failed in the
+  arbiter step, the run stays "in" ARBITER but the decision remembers CODE, which is where the
+  fix pass goes).
+- **`fix`** (`Orchestrator._person_fix`, `_solo_fix`): one pass by the stage's author (the test
+  author for TESTS, the coder for CODE, REVIEW and FINAL_GATES, the solo agent at levels 1
+  and 2) with the failing output and the person's note verbatim, via `final_author_pass(...,
+  extra=fix_pass_extra(note), rdir="fix-pass-N")`. No critic round: the gates decide. Green
+  carries on from that stage (commit, next stage); red asks again. At most
+  `limits.max_fix_passes` (default 3) per run; `decide` refuses the next one.
+- **`takeover`** (`decisions._take_over`, at once, in `decide`): commits the work as it is
+  ("advpipe: work in progress, handed over (checks failing)", skipped when nothing changed),
+  removes the worktree (the branch stays), and ends the run (`ended_by = "takeover"`). The run
+  can't be decided or resumed any more; `advpipe clean` follows its usual rules.
+- **`ignore` / `block`**: set `state.scan_policy` for the rest of the run (see the security
+  scan above). The stage that was running starts again with its author's work kept in the
+  worktree and `ctx.judge_existing` set, so the stage's first round skips the author call and
+  judges the work as it is.
+- **`begin` / `stop`**: see *Begin work?* under the spec stage.
+- **The worktree at a stop.** `Workspace.reopen` resets the worktree on resume, which would
+  throw away the work a person is deciding about. At a decision point the worktree is left
+  exactly as it is, and a resume that applies a choice (`decisions.pending_choice`) reopens it
+  with `keep_changes=True`: no `reset --hard`, no `clean`. (If the worktree was deleted
+  meanwhile, it's recreated from the branch and a note says the uncommitted work was lost.)
+- **Resuming.** `check_resumable` refuses a run waiting for a decision and names `advpipe
+  decide <id> fix | takeover`; it accepts one whose continuing choice is made (`decision_ready`).
+  The choice is marked `applied` (and `fix_passes` counted) only once it has been acted on, so a
+  fix pass an interrupt cut short runs again on a plain `advpipe resume`, with the worktree
+  kept.
+- **Asking at once.** A foreground `advpipe run`/`resume` that stops at a decision point with a
+  terminal on stdin shows the explanation and asks right away (`cli._decide_now`): the choices
+  plus "later", which leaves the run waiting, as a detached run does. `advpipe decide` with no
+  choice does the same, or prints the choices and exits 2 without a terminal.
 
 ## The adversarial loop in detail
 
@@ -509,26 +620,31 @@ spec/author.txt the spec writer's reply (first pass)
 spec/pass-N/{task.md, author.txt, answers.json}   each spec pass's task.md; for passes N ≥ 2
                 (revisions after answers) also the reply and the questions and answers given
 spec/pass-N/bypass.json   the agent's own answers to bypassed questions, for the pass that used them
+stage-solo/pass-N/{author.txt, diff.patch, gates.json, task.md}   levels basic and reviewer; also
+                answers.json (a revision), bypass.json (Bypass) and request.json (a fix pass you asked for)
 stage-tests/round-N/{author.txt, diff.patch, critic.json, gates.json}
 stage-code/round-N/{author.txt, diff.patch, critic.json, gates.json}
 stage-*/round-N/critic.json is absent at levels without critics (tests)
 review/{diff.patch, standards.json, security.json, scanner.json}   (full)
 review/{diff.patch, single.json}   (the single review: tests)
+decisions/N.json                             (each decision point, as asked and as decided; N from 1)
 arbiter.json, arbiter-<stage>.json   (when the arbiter ran)
-final-pass-<kind>/{author.txt, gates.json}   (the final author pass after _settle)
+final-pass-<kind>/{author.txt, gates.json}   (the final author pass after _settle; kind is tests, code or solo)
+fix-pass-N/{author.txt, gates.json}          (a fix pass you asked for at a decision point, outside the solo stage)
 final-gates.json
 report.md       human summary: status, findings, rulings, cost table, notes
 run.lock        present only while a process is driving the run
 ```
 
 **Resume** works at stage boundaries. When a stage finishes, its commit is stored in
-`state.commits` (`spec`, `tests`, `code`, `review`). `Orchestrator.resume`:
+`state.commits` (`spec`, `tests`, `code`, `review`, or `solo`). `Orchestrator.resume`:
 
 1. Loads `run.json` (`check_resumable`). Refuses (`NotResumable`) if the run is `complete` or
    `needs_human`, or if another live process holds the lock. Resumable statuses are `running`
    (interrupted), `error` and `budget_exceeded` (`RESUMABLE` in `models.py`), plus a
    `needs_human` run whose blocking spec questions have all been answered (see "Answering and
-   resuming" above).
+   resuming" above) or whose decision point has a continuing choice (see
+   [Decision points](#decision-points)).
 2. Uses the run's saved `config.json` unless you pass one. `--budget` overrides the limit.
    `_open_workspace` writes the config back to `config.json`, so a raised budget sticks: the
    UI shows it, and a later resume uses it.
@@ -539,7 +655,8 @@ run.lock        present only while a process is driving the run
 
 `_run` then calls `Workspace.reopen`:
 - if the worktree exists: `git reset --hard` and `git clean -fd`, which throws away the
-  interrupted stage's half-done work
+  interrupted stage's half-done work (not after a person's decision about it: then
+  `keep_changes=True` leaves it alone)
 - if it was deleted: recreate it from the branch
 
 `_run` then skips every stage already in `state.commits`. The interrupted stage starts over at
@@ -594,6 +711,7 @@ Extra fields by kind:
 | `status` | budget exceeded, interrupted, and the final event of every process | `status`; the final one adds `final: true` and `total_usd` |
 | `error` | an unexpected exception ended the run | |
 | `questions` | the spec stopped on blocking questions (or, with Bypass up front, found some) | `ids`; `answerable` (false once the spec-pass cap is reached, or under Bypass); `bypassed: true` (Bypass up front) |
+| `decision` | a run stopped at a decision point, or a choice was recorded or applied | `decision_kind`, `choice` (`asked` or the choice), `decision_stage`; `choices` (when asked) |
 | `answers` | answers were recorded (`advpipe answer`, written by that process), or the agent answered bypassed questions | `ids`; `bypassed` (ids a person bypassed, when there are any); `agent: true` (the agent's own answers, under Bypass) |
 
 The final `status` event is written with `echo=False`: it isn't printed, because the CLI prints
@@ -692,8 +810,12 @@ with headless Chromium).
   (see *Actions* below). `ui/runs.py` (`load_runs`) turns run directories into rows,
   newest first. A run whose status is `running` but whose `run.lock` holder is dead is shown as
   *stopped*, and a `needs_human` run waiting on answers to blocking spec questions
-  (`answers.awaiting_answers`, or answers saved but not resumed yet) as *needs answers*. Both
-  are display-only (`display_status`); `run.json` keeps the real status. An unreadable
+  (`answers.awaiting_answers`, or answers saved but not resumed yet) as *needs answers*. A
+  `needs_human` run at a decision point nobody has chosen at (`decisions.awaiting_decision`) is
+  *needs a decision*; one whose continuing choice is made but not acted on yet is *stopped*
+  (resuming applies it); `ended_by` makes it *handed over* (takeover) or *ended* (stop). All
+  are display-only (`display_status`); `run.json` keeps the real status. Each row also carries
+  the run's level (`RunRow.level_label`). An unreadable
   `run.json` is listed as such instead of breaking the page.
 - **Pages** are Jinja2 templates (`ui/templates/`, autoescaped, since run data includes agent
   output) plus htmx and its SSE extension, vendored in `ui/static/` (`VENDORED.txt` records
@@ -701,17 +823,29 @@ with headless Chromium).
   itself every 3 seconds with `hx-trigger="every 3s"`. Each row links to its run detail page.
 - **Run detail** (`/runs/<id>`, `ui/detail.py` + `routes/run_detail.py`). `load_detail` reads
   `run.json`, `config.json`, `report.md` and the per-stage files, and builds:
-  - the **timeline**: SPEC, TESTS, CODE, REVIEW, ARBITER, FINAL CHECKS, each with a state.
-    A mainline stage is *done* once its commit is in `RunState.commits`. The stage the run is
-    in is *in progress* (live) or *stopped here*. During ARBITER, that's both the arbiter and
-    the stage it was called from (the first one without a commit). Later stages are *not yet*
-    (resumable runs) or *not reached*. The arbiter is *not needed* if it never ran.
+  - the **timeline**: the steps of the run's level (`levels.steps_for(state.level)`; `TIMELINE`
+    is the Full one), each with a state. A mainline stage is *done* once its commit
+    (`COMMIT_KEYS`: `spec`, `solo`, `tests`, `code`, `review`) is in `RunState.commits`. The
+    stage the run is in is *in progress* (live) or *stopped here*. During ARBITER, that's both
+    the arbiter and the stage it was called from (the first one of the level's steps without a
+    commit). Later stages are *not yet* (resumable runs, and runs waiting for an answer or a
+    decision) or *not reached*. The arbiter is *not needed* if it never ran, and isn't a step
+    at the levels without one: there, each final author pass and the rulings code made sit in
+    the step they were for.
   - the **round panels**: for each `stage-*/round-N/` (in numeric order), the author's reply
     (`author.txt`), the checks (`gates.json`), the diff the critic judged (`diff.patch`, cut at
     `MAX_DIFF_LINES`), the critic's verdict as finding cards (`critic.json`, parsed with
     `stages.parse_model`, shown raw if that fails), and any test-fix reply. The same for
-    `review/` (both reviewers, scanner), the arbiter's rulings and `final-pass-*/`, and
-    `final-gates.json`. A missing or unreadable file shows as such; it never fails the page.
+    `review/` (both reviewers, scanner, or the single review's `single.json`), the arbiter's
+    rulings and `final-pass-*/`, and `final-gates.json`. The solo levels' `stage-solo/pass-N/`
+    are panels titled *Pass N*, *Revision N: with your answers to ...* (an `answers.json`) or
+    *Fix pass N (you asked)* (a `request.json`); `fix-pass-N/` panels go in the step of the Nth
+    `fix` decision; each decision you made is a panel in the step where the run stopped. A
+    round without a `critic.json` at a level with no critics says "No critic at this level"
+    rather than "missing". A missing or unreadable file shows as such; it never fails the page.
+  - the **decision panel** (`RunDetail.decision_view`) for a run *needing a decision*: the
+    explanation, the failing checks or scan hits as finding cards, and one control per choice
+    (`CHOICE_VIEWS`).
   - **next steps**: commands to paste (`git log`/`merge`/`branch -d` for complete runs;
     `advpipe clean`, `resume` or `cancel` otherwise), with every value `shlex.quote`d. The page
     shows them with copy buttons (`static/app.js`); it never runs them.
@@ -744,9 +878,13 @@ with headless Chromium).
     whose `RunState.work_item_file` is the file's resolved path) and git state (one
     `git status --porcelain -z --untracked-files=all --ignored=matching -- <folder>`).
     Files whose path `item_path` refuses are listed by name only, as not manageable here.
-  - **The editor** has the front-matter fields (branch name, config) and the body, with a
+  - **The editor** has the front-matter fields (branch name, config, and the run settings
+    `level`, `security_scan`, `scan_failures`, `bypass_questions`: each a drop-down whose first
+    option, `inherit`, leaves the key out, so the config decides) and the body, with a
     preview pane and inline checks (`check_draft`) that htmx re-fetches from
-    `POST /items/preview` as you type. Errors (an empty body, a multi-line field) block a save;
+    `POST /items/preview` as you type. A form that doesn't carry a setting at all (`None` in
+    the `Draft`) keeps the file's. Errors (an empty body, a multi-line field, a setting
+    `advpipe run` wouldn't accept, checked with its own parsers) block a save;
     warnings don't: a config file that's missing, invalid or outside the repo, and a branch
     `advpipe/<slugify(name or first line)>` that already exists (the run would add `-2`).
     The branch name is the same one `Workspace.create` would make.
@@ -768,7 +906,8 @@ with headless Chromium).
   `--detach`, so they're ordinary background processes that outlive the UI.
   - **Which actions, when.** `VALID` maps each displayed status to its actions: *running*:
     cancel; *stopped*, *error*, *over budget*: resume and clean; *needs you*: clean;
-    *needs answers*: answer and clean; *complete*: none. Buttons are drawn from it (`RunDetail.actions`), and every action route
+    *needs answers*: answer and clean; *needs a decision*: decide and clean; *handed over*,
+    *ended*: clean; *complete*: none. Buttons are drawn from it (`RunDetail.actions`), and every action route
     checks it again before running anything: an action that's no longer valid gets 409 with a
     "reload" message; one the CLI refuses gets 422 with the CLI's message (escaped). `base.html`
     lets htmx swap both into the page's `#action-result`.
@@ -784,16 +923,43 @@ with headless Chromium).
     (`_spec_rounds`: the first spec, then "Revision N: with your answers to ..."), each with
     the blocking questions it asked and their answers; the Spec & context tab highlights the
     `## Answers` section of `task.md`.
+    **Bypass** is in the same form: a *Let the agent decide* checkbox per question
+    (`bypass_Q<n>`) and a *Bypass all and continue* button (`bypass_all`). A ticked box beats
+    the text in its answer box, and the button beats everything, so what's sent is always what
+    the page says; `check_answers(state, answers, bypass)` validates the lot before any process
+    (`--bypass=Q2` per bypassed question is added to `answer_args`). At the spec-pass limit
+    there's no form: the run is *needs a decision* and the *Begin work?* panel is shown.
+  - **Decide** (`POST /runs/<id>/decide`). For *needs a decision* (`VALID`), the run page's
+    header shows the decision panel; each choice button posts `choice` (and, for `fix`, the note
+    box's `note`). The route checks the choice against `decisions.CHOICES[kind]` for the run's
+    open decision, that a note goes with `fix` only and fits `MAX_NOTE_CHARS`, and that `fix`
+    is within `max_fix_passes`, all before any process (422 with the reason), then runs
+    `advpipe decide <id> CHOICE --repo R [--detach] [--note=TEXT]`: `--detach` for choices that
+    carry on, none for `takeover` and `stop`, which end the run in the command itself. Those two
+    go through a confirmation page first (`GET /runs/<id>/decide/<choice>`, which says what
+    happens), and the route refuses them without the page's `confirm=yes`. The redirect carries
+    a notice key (`decided`, `handed_over`, `ended`).
   - **New run** (`/runs/new`). `plan_run` works out what `advpipe run` would do from the
     form (a work item via `item_path` and `load_work_item`, or a typed task; optional branch
     name and config overrides): the effective config (form, then front matter, then
     `pipeline.toml`, then defaults; it must be a file inside the repo and must load), its
     budget, the branch (`advpipe/<slugify(...)>`), problems, and the argument list. Only
     overrides are passed (`--name`, `--config`), so front matter applies as in the terminal;
-    a typed task goes after `--`. The summary (`POST /runs/new/check`) is re-fetched as the
-    form changes. It puts the budget it shows in a hidden field, and `POST /runs/start`
-    refuses if that's not the budget it works out now, so a run never starts on a budget
-    nobody saw. Success redirects to the run page with the run id `run --detach` printed
+    a typed task goes after `--`. **How much checking:** the slider (`level`, 1 to 5; a
+    `range` input with its labels as visible text and in a `datalist`, `aria-valuetext` set by
+    `app.js`), the security scan (`scan`: default, on, off), the scan policy (`scan_failures`)
+    and Bypass up front (`bypass`; a hidden `bypass_seen` says the box was in the form).
+    `actions._how_much_checking` works out what the run gets the way the CLI does (form over
+    front matter over `[pipeline]` over the level's default), so the summary can describe it
+    (`levels.py`: label, agents, `max_agent_calls`, scan, `dropped_safeguards`). `--level` is
+    always passed; `--security-scan`/`--no-security-scan` only for On/Off, `--scan-failures`
+    only when it differs from what the item or config gives, `--bypass-questions`/
+    `--no-bypass-questions` likewise. Until the slider is touched, `app.js` moves it to the
+    level of the chosen work item (the summary carries it as `data-inherited-level`). The
+    summary (`POST /runs/new/check`) is re-fetched as the form changes. It puts the budget it
+    shows in a hidden field, and the level, scan, policy and Bypass in another (`shown`), and
+    `POST /runs/start` refuses if either isn't what it works out now, so a run never starts on
+    a budget or settings nobody saw. Success redirects to the run page with the run id `run --detach` printed
     (checked with `check_run_id`).
   - **Starting up.** Right after `--detach`, the run directory has `run.lock` and
     `console.log` but no `run.json` yet. `/runs/<id>` then shows a starting-up panel
@@ -821,9 +987,11 @@ with headless Chromium).
   open or closed across refreshes. Finished runs get a static page with no stream.
 - **Help** (`/help`, `routes/help.py`): the pipeline in plain words. Its tables are built from
   the code the rest uses (`runs.STATUSES`, `detail.STEP_STATES`, `runner.ROLE_TOOLS` and
-  `ROLE_MODEL`, `context.ROLE_INPUTS` and `CHECK_HELP`, `Config()` defaults), so the round caps,
-  budget, models and who-sees-what it quotes can't drift. Its own text (`STATUS_NEXT`,
-  `ROLE_JOBS`) must cover every status and role; a test checks that.
+  `ROLE_MODEL`, `context.ROLE_INPUTS` and `CHECK_HELP`, `Config()` defaults, and `levels.py`
+  for the Levels section: steps, agents, call counts, what each level drops, and the
+  design-rules table, whose marks come from `SHAPES`), so the round caps, budget, models,
+  levels and who-sees-what it quotes can't drift. Its own text (`STATUS_NEXT`, `ROLE_JOBS`)
+  must cover every status and role; a test checks that.
 - **Errors.** Routes render their own error pages (`error.html`). Errors FastAPI raises itself
   (no such route: 404, wrong method: 405) go through an exception handler in `create_ui_app`
   to the same template, with the nav, never echoing the URL.
@@ -932,6 +1100,17 @@ Use the skill for quick interactive work, and the CLI when you want guarantees.
   broken files opening in the editor; the inline checks; the list's grouping, last runs and
   git states; deleting only after confirming; path traversal (`../`, absolute, `%2e%2e`,
   backslashes, symlinks out) on every route; and token and CSRF on every route.
+- `test_ui_levels.py`: the New run dialog's slider, scan, policy and Bypass choices (the
+  summary for every level and scan choice, the slider starting at the inherited level, the
+  exact `advpipe run` argument list for each choice, refusing settings nobody saw and bad
+  levels before any process); the editor's run settings round trip; the run page's timeline,
+  solo and single-review panels, the runs list's level chip, the context tab's roles and the
+  Help page's Levels at every level; no inline script or style on the new pages.
+- `test_ui_decisions.py`: the decision panel for each kind (failing checks, scan hits, *Begin
+  work?*), `POST /runs/<id>/decide` with the exact argument list for each choice and every
+  refusal before any process, the confirmation pages for taking over and stopping, a Basic run
+  fixed from the page, handed-over and ended runs, the answer form's Bypass boxes and button
+  (and the cap replacing the form), and agent answers with their badge and reason, escaped.
 - `test_ui_polish.py`: the Help page (every step, status, role and check, the real defaults,
   token required, GET only); HTML 404/405 pages that don't echo the URL; empty states that say
   what to do next; and on every page the skip link, the theme button and script, and no inline

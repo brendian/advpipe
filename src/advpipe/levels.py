@@ -62,13 +62,6 @@ LEVEL_ORDER: list[Level] = [
     Level.FULL,
 ]
 
-# The solo agent's role name. Role.SOLO (and its prompt) arrive with the solo stage
-# (LEVELS_PLAN.md L3); until then roles_for() names it as a plain string.
-SOLO = "solo"
-
-# Levels a run can be started at today; the others are accepted in config and front matter.
-AVAILABLE: frozenset[Level] = frozenset({Level.TESTS, Level.ADVERSARIAL, Level.FULL})
-
 
 class LevelInfo(BaseModel, frozen=True):
     label: str
@@ -129,19 +122,12 @@ def parse_level(value: str | int) -> Level:
     raise ValueError(f"unknown level {value!r}: use one of {names}, or 1 to {len(LEVEL_ORDER)}")
 
 
-def check_available(level: Level) -> None:
-    """Raise ValueError if runs can't be started at ``level`` yet."""
-    if level not in AVAILABLE:
-        ready = ", ".join(lv.value for lv in LEVEL_ORDER if lv in AVAILABLE)
-        raise ValueError(f"level {level.value} isn't available yet (available: {ready})")
-
-
-def roles_for(level: Level) -> list[str]:
-    """The roles (``Role`` values) a run at ``level`` can call, in pipeline order."""
+def roles_for(level: Level) -> list[Role]:
+    """The roles a run at ``level`` can call, in pipeline order."""
     shape = SHAPES[level]
-    roles: list[str] = []
+    roles: list[Role] = []
     if shape.solo:
-        roles.append(SOLO)
+        roles.append(Role.SOLO)
     else:
         roles += [Role.SPEC_WRITER, Role.TEST_AUTHOR]
         if shape.critics:

@@ -64,8 +64,16 @@ NOTICES = {
     "cancelled": "Asked it to stop. It stops at its next safe point (after the agent call or "
     "check it's in), and can be resumed later.",
     "cleaned": "Cleaned up: its working copy and branch are removed. The log stays here.",
-    "answered": "Answers saved. The run carries on in the background: first the spec writer "
+    "answered": "Answers saved. The run carries on in the background: first the agent "
     "revises task.md with your answers.",
+    "bypassed": "You let the agent decide. The run carries on in the background: the agent "
+    "answers the questions (marked as its own in task.md), then revises task.md with them.",
+    "decided": "Choice saved. The run carries on in the background from where it stopped.",
+    "handed_over": "Handed over. The work is committed to the branch and the working copy is "
+    "removed: check the branch out to finish it.",
+    "ended": "Stopped. Nothing was written to the branch, and the run can't be resumed.",
+    "finished": "Finished as it was. Nothing was committed: the work is in the working copy, "
+    "uncommitted, and the run can't be resumed.",
 }
 
 

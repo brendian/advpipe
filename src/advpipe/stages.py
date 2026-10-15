@@ -15,9 +15,11 @@ from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from advpipe import usage
 from advpipe.answers import MAX_ANSWER_CHARS, MAX_REASONING_CHARS
 from advpipe.budget import Budget
 from advpipe.config import Config
+from advpipe.decisions import DecisionNeeded
 from advpipe.events import EventKind, emit, gate_statuses
 from advpipe.gates import (
     GateResult,
@@ -37,19 +39,21 @@ from advpipe.models import (
     Dispute,
     Finding,
     Level,
+    LoginKind,
     OpenQuestion,
+    RateLimitSnapshot,
     Ruling,
     RunState,
     StageResult,
     Verdict,
 )
 from advpipe.runlog import RunLog
-from advpipe.runner import AgentResult, AgentRunner, Role, build_request
+from advpipe.runner import AgentResult, AgentRunner, Role, UsageLimitReached, build_request
 from advpipe.workspace import Workspace
 
 log = logging.getLogger(__name__)
 
-StageKind = Literal["tests", "code"]
+StageKind = Literal["tests", "code", "solo"]
 ALL_GATES = ["test", "types", "lint"]
 SCAN_OFF = "turned off for this run"
 M = TypeVar("M", bound=BaseModel)
@@ -77,6 +81,14 @@ class Context:
     state: RunState
     task_md: str = ""
     last_gates: list[GateResult] = field(default_factory=list)
+    # A person just decided something about the work in the worktree (the scan policy): the
+    # next author step judges that work as it is, instead of calling its author first.
+    judge_existing: bool = False
+    # A person pressed *Try again* after a usage limit cut a step off: the next author call says
+    # so, and carries on from the partial work in the worktree.
+    cut_off: bool = False
+    # The CLI already printed the Console-credits warning, so don't print it again.
+    console_warned: bool = False
     progress: Callable[[str], None] = _no_progress
 
     def emit(self, kind: EventKind, message: str, *, echo: bool = True, **data: object) -> None:
@@ -101,11 +113,76 @@ class Context:
 # --------------------------------------------------------------------------- agent calls
 
 
+CUT_OFF_ROLES = frozenset({Role.SPEC_WRITER, Role.TEST_AUTHOR, Role.CODER, Role.SOLO})
+CUT_OFF_NOTE = (
+    "A previous attempt at this step was cut off by a usage limit; the worktree has its partial "
+    "changes; carry on from them."
+)
+
+
+def _note_usage(
+    ctx: Context,
+    auth: LoginKind,
+    snapshots: tuple[RateLimitSnapshot, ...] | list[RateLimitSnapshot],
+) -> None:
+    """Record what a call revealed about the login and the usage windows: in run.json, in the
+    repo's usage cache, as ``usage`` events, and as notes for a Console login or a window near
+    its limit. Nothing here changes the budget logic."""
+    state = ctx.state
+    if auth == "console" and state.auth != "console":
+        warning = usage.console_warning(ctx.config.limits.budget_usd_per_task)
+        plain = warning.removeprefix("Warning: ")
+        state.notes.append(plain[0].upper() + plain[1:])
+        ctx.emit("usage", warning, echo=not ctx.console_warned, login="console")
+        ctx.console_warned = True
+    if auth != "unknown":
+        state.auth = auth
+    for snap in snapshots:
+        usage.merge_snapshots(state.rate_limits, [snap])
+        label = usage.window_label(snap.window)
+        text = usage.describe(snap)
+        if snap.status == "allowed_warning":
+            text = f"approaching the {label} limit ({text.split(': ', 1)[1]})"
+            state.notes.append(text[0].upper() + text[1:])
+        ctx.emit(
+            "usage",
+            text,
+            window=snap.window,
+            status=snap.status,
+            utilization=snap.utilization,
+            resets_at=snap.resets_at.isoformat() if snap.resets_at else None,
+        )
+    usage.record(ctx.workspace.repo, auth, snapshots)
+
+
 async def call_agent(ctx: Context, role: Role, prompt: str, stage: str) -> AgentResult:
+    if ctx.cut_off and role in CUT_OFF_ROLES:
+        prompt, ctx.cut_off = f"{CUT_OFF_NOTE}\n\n{prompt}", False
     request = build_request(role, prompt, ctx.config, ctx.workspace.path, ctx.budget.remaining)
     ctx.emit("agent_start", f"{role.value} working ({request.model})...", role=role.value)
     started = time.monotonic()
-    result = await ctx.runner.run(request)
+    try:
+        result = await ctx.runner.run(request)
+    except UsageLimitReached as limit:
+        # A limit, not a bug: what the call cost still counts, then the run pauses (the
+        # orchestrator asks the person what to do).
+        try:
+            _note_usage(ctx, limit.auth, limit.rate_limits)
+            ctx.budget.add(limit.cost_usd, stage)
+        finally:
+            ctx.save()
+            ctx.emit(
+                "agent_done",
+                f"{role.value} stopped by a usage limit after "
+                f"{time.monotonic() - started:.0f}s, ${limit.cost_usd:.2f} "
+                f"(run total ${ctx.budget.spent:.2f})",
+                role=role.value,
+                cost_usd=limit.cost_usd,
+                total_usd=ctx.budget.spent,
+                is_error=True,
+            )
+        raise
+    _note_usage(ctx, result.auth, result.rate_limits)
     try:
         ctx.budget.add(result.cost_usd, stage)
     finally:
@@ -229,17 +306,21 @@ def spec_prompt(work_item: str) -> str:
     )
 
 
-def spec_revision_prompt(
-    work_item: str, previous_task_md: str, questions: list[OpenQuestion]
-) -> str:
-    """The spec writer's next pass, after a person answered its blocking questions."""
-    qa = "\n\n".join(
+def _questions_and_answers(questions: list[OpenQuestion]) -> str:
+    return "\n\n".join(
         f"{q.id}: {q.text}\nAnswer"
         + (" (your own best judgement: the person chose Bypass)" if q.source == "agent" else "")
         + f": {q.answer}"
         for q in questions
         if q.answer
     )
+
+
+def spec_revision_prompt(
+    work_item: str, previous_task_md: str, questions: list[OpenQuestion]
+) -> str:
+    """The spec writer's next pass, after a person answered its blocking questions."""
+    qa = _questions_and_answers(questions)
     previous = previous_task_md.strip() or "(missing)"
     return (
         f"Work item: {work_item}\n\n"
@@ -250,6 +331,42 @@ def spec_revision_prompt(
         f"# Questions and answers\n\n{qa}\n\n"
         "Revise the spec: write the complete task.md again at the repository root, following "
         'the section "Revising after answers" in your instructions.'
+    )
+
+
+def _solo_tail(ctx: Context) -> str:
+    paths = ", ".join(ctx.config.paths.tests)
+    return (
+        f"# Gate commands (run from repo root)\n\n"
+        f"{_gate_commands(ctx.config, run_gate_names(ctx.state))}\n\nTest paths: {paths}."
+    )
+
+
+def solo_prompt(ctx: Context) -> str:
+    """The solo agent's first pass: task.md first, then tests and code (or BLOCKING questions
+    and nothing else)."""
+    return (
+        f"Work item: {ctx.state.work_item}\n\n"
+        "The target repository is your current working directory. Write task.md at the "
+        "repository root first, then do the work, as your instructions say.\n\n"
+        f"{_solo_tail(ctx)}"
+    )
+
+
+def solo_revision_prompt(ctx: Context, previous_task_md: str, questions: list[OpenQuestion]) -> str:
+    """The solo agent's next pass, after its blocking questions were answered (by a person, or
+    by the agent itself under Bypass)."""
+    previous = previous_task_md.strip() or "(missing)"
+    return (
+        f"Work item: {ctx.state.work_item}\n\n"
+        "The target repository is your current working directory.\n\n"
+        "You wrote the task.md below, and the run stopped on its BLOCKING open questions. They "
+        "have now been answered.\n\n"
+        f"# Your previous task.md\n\n{_fence(previous, 'markdown')}\n\n"
+        f"# Questions and answers\n\n{_questions_and_answers(questions)}\n\n"
+        'Write the complete task.md again at the repository root, following the section "Revising '
+        'after answers" in your instructions, and then do the work.\n\n'
+        f"{_solo_tail(ctx)}"
     )
 
 
@@ -304,7 +421,11 @@ async def bypass_questions(
     ids = [q.id for q in questions]
     ctx.emit("round", f"the agent decides {', '.join(ids)} itself (Bypass)")
     prompt = bypass_prompt(state.work_item, previous_task_md, questions)
-    parsed, raw = await call_json_agent(ctx, role, prompt, stage, BypassAnswers)
+    cut_off, ctx.cut_off = ctx.cut_off, False  # this call mustn't carry on partial work
+    try:
+        parsed, raw = await call_json_agent(ctx, role, prompt, stage, BypassAnswers)
+    finally:
+        ctx.cut_off = cut_off
     stray = [f for f in ws.changed_files(state.base_commit) if f != "task.md"]
     if stray:
         ws.restore(state.base_commit, stray)
@@ -450,6 +571,47 @@ def test_file_guard(ctx: Context, base: str) -> list[Finding]:
     ]
 
 
+def scan_hit_count(output: str) -> int | None:
+    """How many issues a scanner's output says it found, when it says (semgrep: "2 findings")."""
+    m = re.search(r"(\d+)\s+(?:code\s+)?findings?\b", output, re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+def checked_findings(ctx: Context, results: list[GateResult]) -> list[Finding]:
+    """Blocking findings for failed gates (ground truth). The security scan below full goes
+    through the run's scan policy first (docs/LEVELS_PLAN.md §3.7): ``block`` makes its hits
+    blocking like a failing test, ``ignore`` records them as minor findings marked as ignored
+    by the person, and ``ask`` raises DecisionNeeded, so the run stops and asks."""
+    hits = [r for r in results if r.name == "security" and not r.passed]
+    findings = gate_findings([r for r in results if r not in hits])
+    if not hits:
+        return findings
+    hit_findings = gate_findings(hits)
+    policy = ctx.state.scan_policy
+    if policy == "block":
+        return findings + hit_findings
+    if policy == "ask":
+        count = scan_hit_count(hits[0].output)
+        found = f"{count} issue(s)" if count is not None else "issues"
+        raise DecisionNeeded(
+            "scan_hits",
+            hit_findings,
+            f"The security scan reported {found}. No security reviewer checks them at this "
+            "level, so some may not be real problems.",
+        )
+    ignored = hit_findings[0].model_copy(
+        update={
+            "id": "G-security-ignored",
+            "severity": "minor",
+            "category": "security",
+            "claim": "Security scan reported issues; ignored by you",
+        }
+    )
+    minors = [f for f in ctx.state.minor_findings if f.id != ignored.id]
+    ctx.state.minor_findings = [*minors, ignored]
+    return findings
+
+
 async def stage_gates(ctx: Context, kind: StageKind) -> tuple[list[GateResult], list[Finding]]:
     if kind == "tests":
         (result,) = await run_gates(ctx.config, ctx.workspace.path, ["test"])
@@ -457,7 +619,7 @@ async def stage_gates(ctx: Context, kind: StageKind) -> tuple[list[GateResult], 
         return [result], red_gate_findings(result, new_tests)
     results = await run_gates(ctx.config, ctx.workspace.path, run_gate_names(ctx.state))
     note_scanner_skipped(ctx, results)
-    return results, gate_findings(results)
+    return results, checked_findings(ctx, results)
 
 
 def note_scanner_skipped(ctx: Context, results: list[GateResult]) -> None:
@@ -587,12 +749,18 @@ async def adversarial_stage(ctx: Context, kind: StageKind, *, critic: bool = Tru
         ctx.emit("round", f"round {rnd}/{cap}", cap=cap)
         rdir = f"{stage}/round-{rnd}"
 
-        if rnd == 1:
-            prompt = author_initial_prompt(ctx, kind)
+        if rnd == 1 and ctx.judge_existing:
+            # The work is in the worktree already, and a person has decided how to treat the
+            # scan's hits: judge it as it is.
+            ctx.judge_existing = False
+            result = AgentResult(text="", cost_usd=0.0)
         else:
-            prompt = author_findings_prompt(to_author, ctx.last_gates, f"Round {rnd}")
-        result = await call_agent(ctx, author, prompt, stage)
-        ctx.runlog.write_text(f"{rdir}/author.txt", result.text)
+            if rnd == 1:
+                prompt = author_initial_prompt(ctx, kind)
+            else:
+                prompt = author_findings_prompt(to_author, ctx.last_gates, f"Round {rnd}")
+            result = await call_agent(ctx, author, prompt, stage)
+            ctx.runlog.write_text(f"{rdir}/author.txt", result.text)
 
         # Disputes from this round are judged by this round's critic.
         pending: list[Dispute] = []
@@ -711,10 +879,17 @@ async def review_stage(ctx: Context) -> StageResult:
         "Reply with Verdict JSON only."
     )
 
-    (std, std_raw), (sec, sec_raw) = await asyncio.gather(
+    # Both reviewers run to the end before anything is raised, so a usage limit in one never
+    # leaves the other running in the background (its cost still counts).
+    both = await asyncio.gather(
         call_critic(ctx, Role.STANDARDS_REVIEWER, std_prompt, "review"),
         call_critic(ctx, Role.SECURITY_REVIEWER, sec_prompt, "review"),
+        return_exceptions=True,
     )
+    for outcome in sorted(both, key=lambda o: not isinstance(o, UsageLimitReached)):
+        if isinstance(outcome, BaseException):
+            raise outcome
+    (std, std_raw), (sec, sec_raw) = both  # type: ignore[misc]  # no exceptions left
     _emit_verdict(ctx, Role.STANDARDS_REVIEWER, std)
     _emit_verdict(ctx, Role.SECURITY_REVIEWER, sec)
     ctx.runlog.write_text("review/standards.json", std_raw)
@@ -820,18 +995,33 @@ async def final_author_pass(
     *,
     note: str = ARBITER_NOTE,
     stage: str = "arbiter",
+    extra: str = "",
+    rdir: str = "",
 ) -> list[Finding]:
     """One last author pass on `fix` rulings; no critic. Returns findings still failing.
-    ``stage`` is what the call is charged to."""
-    prompt = author_findings_prompt(findings, ctx.last_gates, note)
+    ``stage`` is what the call is charged to; ``extra`` is added to the prompt (a person's
+    note) and ``rdir`` is the run-directory folder for the pass's files."""
+    rdir = rdir or f"final-pass-{kind}"
+    prompt = author_findings_prompt(findings, ctx.last_gates, note) + extra
     result = await call_agent(ctx, author, prompt, stage)
-    ctx.runlog.write_text(f"final-pass-{kind}/author.txt", result.text)
+    ctx.runlog.write_text(f"{rdir}/author.txt", result.text)
     guard = test_file_guard(ctx, ctx.tests_commit) if kind == "code" else []
     gates, gate_f = await stage_gates(ctx, kind)
     ctx.last_gates = gates
     ctx.emit("gates", f"gates after final pass: {gates_line(gates)}", gates=gate_statuses(gates))
-    ctx.runlog.write_json(f"final-pass-{kind}/gates.json", gates)
+    ctx.runlog.write_json(f"{rdir}/gates.json", gates)
     return guard + gate_f
+
+
+def fix_pass_note(number: int) -> str:
+    return f"Fix pass {number}: a person asked for another pass at the failing checks"
+
+
+def fix_pass_extra(note: str) -> str:
+    """What a person's note adds to an author's fix-pass prompt, verbatim."""
+    if not note.strip():
+        return ""
+    return f"\n\nA person asked for this pass and left you this note:\n\n{_fence(note.strip())}"
 
 
 def blocking_open_questions(task_md: str) -> list[str]:

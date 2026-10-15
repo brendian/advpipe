@@ -15,7 +15,13 @@ from test_ui import anon, fake_run, logged_in  # noqa: E402
 from test_ui_detail import EVIL, no_raw_html, orchestrate  # noqa: E402
 
 from advpipe.config import Config, Paths  # noqa: E402
-from advpipe.models import RunState, Stage, Status  # noqa: E402
+from advpipe.levels import roles_for  # noqa: E402
+from advpipe.models import (  # noqa: E402
+    Level,  # noqa: E402
+    RunState,
+    Stage,
+    Status,
+)
 from advpipe.runlog import RunLog  # noqa: E402
 from advpipe.runner import Role  # noqa: E402
 from advpipe.ui.context import SEEN_BY, _standards  # noqa: E402
@@ -77,9 +83,11 @@ async def test_every_block_from_a_complete_run(config: Config, target_repo: Path
     assert "<h1>mathutils</h1>" in standards
 
     prompts = block(page, "ctx-prompts")
-    for role in Role:
+    for role in roles_for(Level.FULL):
         assert f'id="role-{role.value}"' in prompts, role
-    assert prompts.count("claude-opus-5-5") == 4  # spec writer, test author, coder, arbiter
+    assert 'id="role-solo"' not in prompts  # a full run never calls the solo agent
+    # spec writer, test author, coder, arbiter
+    assert prompts.count("claude-opus-5-5") == 4
     assert prompts.count("claude-sonnet-5-5") == 4  # the critics and reviewers
     assert prompts.count('<span class="tag">read-only</span>') == 5
     assert "You are the <strong>spec writer</strong>" in prompts
@@ -126,7 +134,7 @@ def test_missing_files_show_clear_empty_states(target_repo: Path) -> None:
     assert "There's no <code>CLAUDE.md</code> in the repo" in standards
     prompts = block(page, "ctx-prompts")
     assert "Models shown are advpipe's defaults" in prompts
-    assert prompts.count('id="role-') == len(Role)
+    assert prompts.count('id="role-') == len(roles_for(Level.FULL))
 
 
 def test_task_md_not_written_yet_while_live(target_repo: Path) -> None:

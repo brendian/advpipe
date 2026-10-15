@@ -236,6 +236,14 @@ Each one is a single Claude Code session. Each ends with `pytest`, `ruff check .
 Optional later: browser tests with Playwright (via the `run` skill), a diff view with syntax
 highlighting, and editing a run's `task.md` before tests start (a "pause after spec" option).
 
+**Later: pipeline levels** *(done; see [LEVELS_PLAN.md](LEVELS_PLAN.md), L5)*. The New run
+dialog's level slider (`level`, with `shown` confirming what the summary showed), scan and
+Bypass choices; the work-item editor's run settings; a level chip on every run; a level-aware
+timeline with solo, fix-pass, single-review and decision panels; the *needs a decision*,
+*handed over* and *ended* display statuses; the decision panel and `POST /runs/<id>/decide`
+(takeover and stop through confirmation pages); Bypass boxes and *Bypass all* in the answer
+form; and a Levels section in Help.
+
 **Later: answering blocking questions** *(done; see [ANSWERS_PLAN.md](ANSWERS_PLAN.md))*. A
 display-only *needs answers* status, an answer form on the run page (`POST /runs/<id>/answer`,
 running `advpipe answer --detach`), and a panel per spec pass in the SPEC step.

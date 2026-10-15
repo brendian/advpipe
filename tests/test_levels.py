@@ -107,9 +107,9 @@ def test_parse_level_refuses(value: str | int) -> None:
 
 def test_roles_and_steps() -> None:
     assert [len(roles_for(level)) for level in LEVEL_ORDER] == [1, 2, 4, 6, 8]
-    assert roles_for(Level.BASIC) == ["solo"]
-    assert roles_for(Level.REVIEWER) == ["solo", Role.CODE_CRITIC]
-    assert set(roles_for(Level.FULL)) == set(Role)
+    assert roles_for(Level.BASIC) == [Role.SOLO]
+    assert roles_for(Level.REVIEWER) == [Role.SOLO, Role.CODE_CRITIC]
+    assert set(roles_for(Level.FULL)) == set(Role) - {Role.SOLO}
     assert Role.STANDARDS_REVIEWER not in roles_for(Level.ADVERSARIAL)
     assert Role.SECURITY_REVIEWER not in roles_for(Level.ADVERSARIAL)
     assert Role.TEST_CRITIC not in roles_for(Level.TESTS)
@@ -295,15 +295,11 @@ def test_scan_failures_precedence(target_repo: Path, monkeypatch: pytest.MonkeyP
 @pytest.mark.parametrize(
     ("args", "front", "toml", "error"),
     [
-        (["--level", "basic"], "", "", "level basic isn't available yet"),
-        (["--level", "2"], "", "", "level reviewer isn't available yet"),
-        ([], "level: reviewer\n", "", "level reviewer isn't available yet"),
-        ([], "", '[pipeline]\nlevel = "basic"\n', "level basic isn't available yet"),
         (["--level", "huge"], "", "", "unknown level 'huge'"),
         (["--scan-failures", "maybe"], "", "", "use one of ask, ignore, block"),
     ],
 )
-def test_run_refuses_levels_not_available(
+def test_run_refuses_bad_level_settings(
     target_repo: Path,
     monkeypatch: pytest.MonkeyPatch,
     args: list[str],
@@ -395,9 +391,8 @@ async def test_scan_on_below_full_runs_with_the_checks(config: Config, target_re
     assert [g["name"] for g in code_round] == ["test", "types", "lint", "security"]
     # The coder is told about the scan command, so it can run it.
     assert "- security: `" in runner.calls_for(Role.CODER)[0].prompt
-    # 'ask' (the default) isn't available yet: hits block, and the report says so.
-    assert state.scan_policy == "block"
-    assert any("policy 'ask' isn't available yet" in n for n in state.notes)
+    # 'ask' is the default: a scan that passes never asks.
+    assert state.scan_policy == "ask" and state.decision is None
     report = (logdir / "report.md").read_text()
     assert "- **Level:** adversarial (4 of 5): 6 agents · security scan on" in report
 
@@ -417,7 +412,6 @@ async def test_scan_hits_block_below_full(config: Config, target_repo: Path) -> 
     assert [f.criterion for f in state.open_findings] == ["gate:security"]
     assert "shell=True" in state.open_findings[0].evidence
     assert "G-security" in runner.calls_for(Role.CODER)[1].prompt
-    assert not any("isn't available yet" in n for n in state.notes)  # block was asked for
 
 
 @pytest.mark.parametrize("level", ["adversarial", "full"])
@@ -611,7 +605,7 @@ def test_levels_command(tmp_path: Path) -> None:
     for level in LEVEL_ORDER:
         assert f"{level_number(level)}  {LEVEL_INFO[level].label} ({level.value})" in out
     assert "4  Adversarial (adversarial)  (default)" in out
-    assert "1  Basic (basic)  (not available yet)" in out
+    assert "1  Basic (basic)\n" in out and "not available" not in out
     assert "5  Full (full)\n" in out
     assert "7 agent calls if all goes well, at most 30" in out
     assert "1 agent: solo; 1 agent call if all goes well, at most 1" in out

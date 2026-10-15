@@ -14,16 +14,16 @@ from typing import Annotated, Any
 import typer
 from typer.core import TyperCommand
 
-from advpipe import answers
+from advpipe import answers, decisions, usage
 from advpipe.answers import AnswerError
 from advpipe.config import Config, load_config
 from advpipe.control import CONSOLE_LOG, ControlError, cancel_run, clean_run, start_detached
+from advpipe.decisions import DecisionError
 from advpipe.gates import run_gates
 from advpipe.levels import (
     LEVEL_INFO,
     LEVEL_ORDER,
     SHAPES,
-    check_available,
     dropped_safeguards,
     level_number,
     level_tag,
@@ -41,7 +41,7 @@ from advpipe.orchestrator import (
     new_run_id,
     run_many,
 )
-from advpipe.runlog import RunLog, check_run_id, list_runs
+from advpipe.runlog import RunLog, check_run_id, list_runs, scan_policy_line
 from advpipe.runner import SdkAgentRunner
 from advpipe.workitem import SCAN_FAILURES, WorkItemError, load_work_item, switch
 
@@ -104,17 +104,55 @@ def make_progress(quiet: bool, label: str = "") -> Callable[[str], None]:
 
 def _summary(state: RunState, runlog: RunLog) -> None:
     tag = level_tag(state)  # nothing for full with the scan on: that line reads as it always has
+    # A subscription login isn't billed per call, so its dollar figure is an estimate.
+    estimate = " (API-equivalent)" if state.auth == "subscription" else ""
     typer.echo(
-        f"{state.run_id}  {state.status.value}  ${state.cost_usd:.2f}  {state.branch}"
+        f"{state.run_id}  {state.status.value}  ${state.cost_usd:.2f}{estimate}  {state.branch}"
         + (f"  [{tag}]" if tag else "")
     )
+    if state.auth == "subscription" and state.rate_limits:
+        typer.echo(f"  usage, last known: {'; '.join(usage.describe_all(state.rate_limits))}")
     if answers.awaiting_answers(state, answers.max_spec_passes(runlog)):
         n = len(answers.pending(state))
         typer.echo(
             f"  {n} blocking question{'s' if n != 1 else ''}. Answer them, and the run "
             f"continues: {answers.answer_command(state.run_id)}"
         )
+    if decisions.awaiting_decision(state):
+        for line in _decision_lines(state):
+            typer.echo(f"  {line}")
+    elif state.ended_by:
+        typer.echo(f"  {_ended_line(state)}")
     typer.echo(f"  report: {runlog.root / 'report.md'}")
+
+
+def _decision_lines(state: RunState) -> list[str]:
+    """What a run waiting at a decision point asks, and the command for each choice."""
+    d = state.decision
+    assert d is not None
+    lines = [d.explanation]
+    for choice in decisions.CHOICES[d.kind]:
+        label = decisions.CHOICE_LABELS[choice]
+        lines.append(f"{label + ':':<44}advpipe decide {state.run_id} {choice}")
+    return lines
+
+
+def _ended_line(state: RunState) -> str:
+    if state.ended_by == "takeover":
+        return f"handed over to you: git switch {state.branch}"
+    if state.ended_by == "finish":
+        return f"finished as is: the uncommitted work is in {state.worktree}"
+    return "stopped at your choice; nothing more will run"
+
+
+def _warn_console(repo: Path, budget_usd: float, runs: int = 1) -> bool:
+    """Warn, before agent work starts, when the login is known or likely to be Anthropic Console
+    credits (real money). A warning, not a prompt: scripted and detached runs aren't held up.
+    True if it was printed (so the run needn't say it again)."""
+    if not usage.likely_console(repo.resolve()):
+        return False
+    typer.echo(usage.console_warning(budget_usd, runs), err=True)
+    return True
 
 
 def _short(text: str, width: int) -> str:
@@ -244,8 +282,9 @@ def run(
         str | None,
         typer.Option(
             callback=_scan_failures_opt,
-            help="Below level full, what a failing security scan means: ask, ignore or block. "
-            "For now every choice blocks (asking and ignoring come later).",
+            help="Below level full, what a failing security scan means: ask (the run stops and "
+            "asks you; the default), ignore (record the hits as minor findings) or block (treat "
+            "them like a failing test).",
         ),
     ] = None,
     bypass_questions: Annotated[
@@ -306,10 +345,7 @@ def run(
         scan_failures=scan_failures or item_failures,
         bypass_questions=bypass_questions if bypass_questions is not None else item_bypass,
     )
-    try:
-        check_available(cfg.pipeline.level)
-    except ValueError as e:
-        raise typer.BadParameter(str(e), param_hint="--level") from e
+    warned = _warn_console(repo, cfg.limits.budget_usd_per_task * len(items), len(items))
     if detach:
         _detach(
             repo,
@@ -341,6 +377,7 @@ def run(
             name=name,
             run_id=run_id,
             work_item_file=item_file,
+            console_warned=warned,
         )
         orchestrators.append(orch)
         return orch
@@ -351,6 +388,8 @@ def run(
         raise typer.Exit(code=130) from None  # the run already said how to resume
     for orch, state in zip(orchestrators, states, strict=True):
         _summary(state, orch.runlog)
+    if len(states) == 1 and _decide_now(states[0], repo, keep_worktree=keep_worktree, quiet=quiet):
+        return
     if any(s.status is not Status.COMPLETE for s in states):
         raise typer.Exit(code=1)
 
@@ -568,6 +607,168 @@ def answer(
     )
 
 
+def _decide_now(state: RunState, repo: Path, *, keep_worktree: bool, quiet: bool) -> bool:
+    """A foreground run stopped at a decision point and a person is at the terminal: ask at
+    once. True if they chose (and what followed has decided the exit code), False to leave the
+    run waiting ("later"), as a detached run does."""
+    if not (decisions.awaiting_decision(state) and _stdin_is_tty()):
+        return False
+    d = state.decision
+    assert d is not None
+    options = [*decisions.CHOICES[d.kind], "later"]
+    typer.echo("")
+    typer.echo(d.explanation)
+    for choice in decisions.CHOICES[d.kind]:
+        typer.echo(f"  {choice}: {decisions.CHOICE_LABELS[choice]}")
+    typer.echo("  later: decide later (the run waits)")
+    while True:
+        pick = typer.prompt(f"Your choice ({' / '.join(options)})", default="later").strip().lower()
+        if pick in options:
+            break
+        typer.echo(f"choose one of: {', '.join(options)}", err=True)
+    if pick == "later":
+        typer.echo(f"decide later with: {decisions.decide_command(state.run_id, d.kind)}")
+        return False
+    note = ""
+    if pick == "fix":
+        note = typer.prompt("A note for the author (optional)", default="", show_default=False)
+    _choose(
+        state.run_id,
+        repo,
+        pick,
+        note,
+        resume_run=True,
+        detach=False,
+        budget=None,
+        config=None,
+        keep_worktree=keep_worktree,
+        quiet=quiet,
+    )
+    return True
+
+
+def _choose(
+    run_id: str,
+    repo: Path,
+    choice: str,
+    note: str,
+    *,
+    resume_run: bool,
+    detach: bool,
+    budget: float | None,
+    config: Path | None,
+    keep_worktree: bool,
+    quiet: bool,
+) -> None:
+    """Record the choice, then resume the run exactly as `advpipe resume` does (unless the
+    choice ended the run)."""
+    try:
+        state = decisions.decide(repo, run_id, choice, note)
+    except DecisionError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=2) from e
+    if state.ended_by:
+        _print_ended(state, repo)
+        return
+    typer.echo(f"you chose {choice}", err=True)
+    if not resume_run:
+        typer.echo(f"continue with: advpipe resume {run_id}", err=True)
+        return
+    resume(
+        run_id,
+        repo=repo,
+        config=config,
+        budget=budget,
+        keep_worktree=keep_worktree,
+        quiet=quiet,
+        detach=detach,
+        detached_child=False,
+    )
+
+
+def _print_ended(state: RunState, repo: Path) -> None:
+    """What's where after a choice that ends the run."""
+    if state.ended_by == "takeover":
+        cfg = RunLog.for_run(repo.resolve(), state.run_id).read_config() or Config()
+        typer.echo(f"handed over: branch {state.branch} has the work as it was")
+        typer.echo(f"  git switch {state.branch}")
+        checks = [" ".join(cmd) for cmd in (cfg.gates.test, cfg.gates.types, cfg.gates.lint) if cmd]
+        if checks:
+            typer.echo("  the checks: " + "; ".join(checks))
+        typer.echo(f"  clean up later with: advpipe clean {state.run_id} --force")
+    elif state.ended_by == "finish":
+        typer.echo(f"finished as is: run {state.run_id} ends here; nothing was committed")
+        typer.echo(f"  the work so far, uncommitted, is in {state.worktree}")
+        typer.echo(f"  look at it: git -C {state.worktree} status")
+        typer.echo(f"  clean up later with: advpipe clean {state.run_id} (--force deletes it)")
+    else:
+        typer.echo(f"stopped: run {state.run_id} ends here; nothing was written to the branch")
+
+
+@app.command()
+def decide(
+    run_id: RunIdArg,
+    choice: Annotated[
+        str | None,
+        typer.Argument(
+            help="fix | takeover (checks are failing), ignore | block (security scan hits), "
+            "retry | finish (a usage limit or credit balance ran out), "
+            "begin | stop (blocking questions after the last spec pass)."
+        ),
+    ] = None,
+    repo: RepoOpt = Path("."),
+    note: Annotated[
+        str | None,
+        typer.Option(
+            "--note",
+            help="With fix: a note for the author, passed along as you wrote it.",
+        ),
+    ] = None,
+    resume_run: Annotated[
+        bool,
+        typer.Option("--resume/--no-resume", help="Resume the run once the choice is saved."),
+    ] = True,
+    detach: Annotated[
+        bool, typer.Option(help="Resume in the background (output goes to console.log).")
+    ] = False,
+    budget: Annotated[
+        float | None, typer.Option(help="New per-task budget in USD for the resumed run.")
+    ] = None,
+    config: ConfigOpt = None,
+    keep_worktree: KeepOpt = False,
+    quiet: QuietOpt = False,
+) -> None:
+    """Choose what a run does at the point where it stopped to ask you, then carry on."""
+    runlog = RunLog.for_run(repo.resolve(), run_id)
+    if not (runlog.root / "run.json").is_file():
+        typer.echo(f"no run {run_id} in {repo}", err=True)
+        raise typer.Exit(code=2)
+    state = runlog.read_state()
+    if choice is None:
+        if not decisions.awaiting_decision(state):
+            typer.echo(decisions.not_waiting_message(state), err=True)
+            raise typer.Exit(code=2)
+        if _stdin_is_tty():
+            _decide_now(state, repo, keep_worktree=keep_worktree, quiet=quiet)
+            return
+        typer.echo(f"run {run_id} is waiting for a decision:", err=True)
+        for line in _decision_lines(state):
+            typer.echo(f"  {line}", err=True)
+        raise typer.Exit(code=2)
+    _choose(
+        run_id,
+        repo,
+        choice,
+        note or "",
+        resume_run=resume_run,
+        detach=detach,
+        budget=budget,
+        config=config,
+        keep_worktree=keep_worktree,
+        quiet=quiet,
+    )
+
+
 @app.command()
 def resume(
     run_id: RunIdArg,
@@ -599,6 +800,13 @@ def resume(
         except NotResumable as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(code=2) from e
+        budget_now = (
+            budget
+            or (
+                cfg or RunLog.for_run(repo.resolve(), run_id).read_config() or Config()
+            ).limits.budget_usd_per_task
+        )
+        _warn_console(repo, budget_now)
         args = ["resume", run_id, "--repo", str(repo.resolve()), "--detached-child"]
         if config is not None:
             args += ["--config", str(config.resolve())]
@@ -618,6 +826,8 @@ def resume(
             keep_worktree=keep_worktree,
             progress=make_progress(quiet),
             locked_for_me=detached_child,
+            console_warned=detached_child
+            or _warn_console(repo, budget or _budget_of(repo, run_id, cfg)),
         )
     except NotResumable as e:
         typer.echo(str(e), err=True)
@@ -628,8 +838,16 @@ def resume(
     except KeyboardInterrupt:
         raise typer.Exit(code=130) from None
     _summary(state, orch.runlog)
+    if _decide_now(state, repo, keep_worktree=keep_worktree, quiet=quiet):
+        return
     if state.status is not Status.COMPLETE:
         raise typer.Exit(code=1)
+
+
+def _budget_of(repo: Path, run_id: str, cfg: Config | None) -> float:
+    """The per-task budget a resumed run will run under."""
+    saved = RunLog.for_run(repo.resolve(), run_id).read_config()
+    return (cfg or saved or Config()).limits.budget_usd_per_task
 
 
 @app.command()
@@ -701,12 +919,37 @@ def status(
         f"level:    {s.level.value} ({level_number(s.level)} of {len(LEVEL_ORDER)}), "
         f"security scan {'on' if scan_on(s) else 'off'}",
         f"branch:   {s.branch}",
-        f"cost:     ${s.cost_usd:.2f}",
+        f"cost:     ${s.cost_usd:.2f}" + (" (API-equivalent)" if s.auth == "subscription" else ""),
         f"done:     {', '.join(s.commits) or '-'}",
         f"open:     {len(s.open_findings)} blocking, {len(s.minor_findings)} minor",
         f"updated:  {s.updated_at:%Y-%m-%d %H:%M:%S} UTC",
     ]
     s = answers.migrate(s)
+    if s.auth != "unknown":
+        lines.append(f"login:    {usage.LOGIN_LABELS[s.auth]}")
+    if s.rate_limits:
+        lines.append("usage:    " + "; ".join(usage.describe_all(s.rate_limits)) + " (last known)")
+    if decisions.awaiting_decision(s):
+        lines.append("waiting for a decision:")
+        lines += [f"  {line}" for line in _decision_lines(s)]
+    elif s.ended_by:
+        lines.append(f"ended:    {_ended_line(s)}")
+    if s.fix_passes:
+        lines.append(f"fix:      {s.fix_passes} fix pass(es) you asked for")
+    if scan_line := scan_policy_line(s):
+        lines.append(f"scan:     {scan_line}")
+    if s.bypass_questions:
+        lines.append("bypass:   blocking questions bypassed up front; the agent answers them")
+    done = [d for d in s.decisions if d.choice]
+    if done:
+        lines.append("decisions:")
+        for n, d in enumerate(s.decisions, 1):
+            what = f"you chose {d.choice}" if d.choice else "waiting"
+            note = f" (note: {_short(d.note, 60)})" if d.note.strip() else ""
+            lines.append(f"  {n}. {d.kind} at {d.stage.value}: {what}{note}")
+    ignored = [f for f in s.minor_findings if f.claim.endswith("ignored by you")]
+    if ignored:
+        lines.append(f"ignored:  {len(ignored)} security scan finding(s), ignored by you")
     if s.questions:
         lines.append("questions:")
         for q in s.questions:
@@ -721,6 +964,34 @@ def status(
         if answers.awaiting_answers(s, answers.max_spec_passes(runlog)):
             lines.append(f"answer them: {answers.answer_command(s.run_id)}")
     typer.echo("\n".join(lines))
+
+
+@app.command(name="usage")
+def usage_cmd(repo: RepoOpt = Path(".")) -> None:
+    """Show the login and the last known subscription usage (read-only; no API calls).
+
+    Claude reports usage only when it changes, so this is what advpipe last saw, with its age,
+    never a live gauge.
+    """
+    cache = usage.load_cache(repo.resolve())
+    typer.echo(f"login: {usage.LOGIN_LABELS[cache.login]}")
+    if cache.login == "unknown":
+        typer.echo("  (advpipe learns the login from the first agent call of a run;")
+        typer.echo("   cost figures are API-equivalent if you're on a subscription)")
+    if not cache.windows:
+        typer.echo(
+            "usage: not known yet: advpipe sees usage only when Claude reports a change"
+            if cache.login != "console"
+            else "usage: Console credits have no usage windows"
+        )
+        return
+    typer.echo("usage, last known:")
+    for window in sorted(
+        cache.windows,
+        key=lambda w: list(usage.WINDOW_LABELS).index(w) if w in usage.WINDOW_LABELS else 99,
+    ):
+        snap = cache.windows[window]
+        typer.echo(f"  {usage.describe(snap)}  (seen {usage.age(snap)})")
 
 
 @app.command()
@@ -741,14 +1012,7 @@ def levels(repo: RepoOpt = Path("."), config: ConfigOpt = None) -> None:
         info, shape = LEVEL_INFO[level], SHAPES[level]
         happy, worst = max_agent_calls(level, cfg.limits)
         agents = len(roles_for(level))
-        marks = []
-        if level is cfg.pipeline.level:
-            marks.append("default")
-        try:
-            check_available(level)
-        except ValueError:
-            marks.append("not available yet")
-        mark = f"  ({', '.join(marks)})" if marks else ""
+        mark = "  (default)" if level is cfg.pipeline.level else ""
         typer.echo(f"{level_number(level)}  {info.label} ({level.value}){mark}")
         typer.echo(f"   {info.description}")
         typer.echo(f"   good for: {info.good_for}")

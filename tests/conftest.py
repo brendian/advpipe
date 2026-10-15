@@ -22,6 +22,12 @@ def git(cwd: Path, *args: str) -> str:
     ).stdout
 
 
+@pytest.fixture(autouse=True)
+def no_console_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A developer's own ANTHROPIC_API_KEY mustn't turn on the Console-credits warning."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
 @pytest.fixture
 def target_repo(tmp_path: Path) -> Path:
     """A fresh git copy of tests/fixtures/sample_repo."""

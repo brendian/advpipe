@@ -365,15 +365,16 @@ async def test_mixed_person_and_agent_answers_in_one_section(
     assert f"**Reason:** {AGENT_REASON}" in report
 
 
-async def test_at_the_cap_bypass_still_stops_for_good(config: Config, target_repo: Path) -> None:
+async def test_at_the_cap_the_run_asks_begin_work(config: Config, target_repo: Path) -> None:
     capped = with_cap(config, 2)
     await blocked_run(capped, target_repo)
     record_answers(target_repo, "r1", {}, {"Q1"})
     state, _ = await resume(capped, target_repo, bypassed_resume("Q1", revised=second_question()))
-    # As without Bypass, until a "Begin work?" decision point exists (LEVELS_PLAN.md, L3).
+    # Bypass covers one stop; at the cap the run asks "Begin work?" (tests/test_decisions.py).
     assert state.status is Status.NEEDS_HUMAN and state.spec_passes == 2
     assert not answers.awaiting_answers(state, 2)
-    with pytest.raises(AnswerError, match="start a new run"):
+    assert state.decision is not None and state.decision.kind == "spec_cap"
+    with pytest.raises(AnswerError, match="advpipe decide r1 begin"):
         record_answers(target_repo, "r1", {}, {"Q2"})
 
 

@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from advpipe import answers
+from advpipe import answers, decisions
 from advpipe.config import Config
-from advpipe.models import RunState, Stage, Status
+from advpipe.levels import LEVEL_INFO, level_number
+from advpipe.models import Level, RunState, Stage, Status
 from advpipe.runlog import RUN_ID_RE, RunLog, runs_dir
 
 
@@ -19,9 +20,13 @@ class StatusInfo:
     help: str
 
 
-# Keyed by RunState.status, plus two display-only statuses: "stopped" (status "running" with
-# no live process) and "needs_answers" (needs_human, waiting on answers to blocking spec
-# questions: answers.awaiting_answers, or answers saved but not resumed yet).
+# Keyed by RunState.status, plus display-only statuses derived from run.json: "stopped" (status
+# "running" with no live process, or a decision made but not acted on yet), "needs_answers"
+# (needs_human, waiting on answers to blocking spec questions: answers.awaiting_answers, or
+# answers saved but not resumed yet), "needs_decision" (needs_human at a decision point nobody
+# has chosen at: decisions.awaiting_decision), "paused" (that, at a usage limit), "handed_over"
+# (the person took over), "ended" (the person chose to stop at "Begin work?") and "finished" (the
+# person finished a paused run as it was).
 STATUSES: dict[str, StatusInfo] = {
     "running": StatusInfo("running", "●", "An advpipe process is working on this run right now."),
     "stopped": StatusInfo(
@@ -46,6 +51,38 @@ STATUSES: dict[str, StatusInfo] = {
         "The spec has questions only you can answer. Answer them on the run's page (or with "
         "advpipe answer <run id>) and the same run carries on.",
     ),
+    "needs_decision": StatusInfo(
+        "needs a decision",
+        "◆",
+        "The run stopped to ask you to choose: another fix pass or take over, ignore or block "
+        "security scan hits, or begin work without the answers. Choose on the run's page (or "
+        "with advpipe decide <run id>) and the same run carries on.",
+    ),
+    "paused": StatusInfo(
+        "paused: usage limit",
+        "⏸",
+        "A usage limit (or the Console credit balance) ran out. The run is paused with its work "
+        "kept. Add usage or credits, or wait for the reset, then press Try again on the run's "
+        "page (or advpipe decide <run id> retry), or finish it as it is.",
+    ),
+    "handed_over": StatusInfo(
+        "handed over",
+        "→",
+        "You took over. The branch has the work as it was, and the working copy is removed. "
+        "Check the branch out and finish it by hand.",
+    ),
+    "ended": StatusInfo(
+        "ended",
+        "■",
+        "You chose to stop at this point. Nothing was written to the branch, and the run can't "
+        "be resumed.",
+    ),
+    "finished": StatusInfo(
+        "finished as is",
+        "■",
+        "You finished this run as it was when a usage limit stopped it. Nothing was committed: "
+        "the work is in its working copy, uncommitted. The run can't be resumed.",
+    ),
     "budget_exceeded": StatusInfo(
         "over budget",
         "$",
@@ -63,7 +100,17 @@ FILTERS: dict[str, tuple[str, frozenset[str]]] = {
     "running": ("Running", frozenset({"running"})),
     "needs_you": (
         "Needs you",
-        frozenset({"stopped", "needs_human", "needs_answers", "budget_exceeded", "error"}),
+        frozenset(
+            {
+                "stopped",
+                "needs_human",
+                "needs_answers",
+                "needs_decision",
+                "paused",
+                "budget_exceeded",
+                "error",
+            }
+        ),
     ),
     "complete": ("Complete", frozenset({"complete"})),
 }
@@ -84,10 +131,16 @@ class RunRow:
     started_at: datetime
     age: str
     work_item_file: str = ""  # absolute path, for runs started with --item
+    level: str = "full"  # the run's level (a levels.Level value)
 
     @property
     def info(self) -> StatusInfo:
         return STATUSES[self.status]
+
+    @property
+    def level_label(self) -> str:
+        """'Tests (3 of 5)', for the level chip."""
+        return level_text(self.level)
 
 
 @dataclass(frozen=True)
@@ -125,6 +178,15 @@ def age(then: datetime, now: datetime) -> str:
     return f"{days} day{'s' if days != 1 else ''} ago"
 
 
+def level_text(level: str) -> str:
+    """'Tests (3 of 5)' for a level value; the value itself if it isn't a known level."""
+    try:
+        parsed = Level(level)
+    except ValueError:
+        return level
+    return f"{LEVEL_INFO[parsed].label} ({level_number(parsed)} of 5)"
+
+
 def stage_label(state: RunState, cfg: Config | None) -> str:
     """'CODE r2/3': the stage, plus the round and its cap during the author/critic loops."""
     label = STAGE_LABELS.get(state.stage, state.stage.value)
@@ -152,6 +214,17 @@ def display_status(state: RunState, log: RunLog) -> str:
     if state.status is Status.RUNNING:
         return "stopped"
     if state.status is Status.NEEDS_HUMAN:
+        if state.ended_by == "takeover":
+            return "handed_over"
+        if state.ended_by == "finish":
+            return "finished"
+        if state.ended_by:
+            return "ended"
+        if decisions.awaiting_decision(state):
+            d = state.decision
+            return "paused" if d is not None and d.kind == "usage_limit" else "needs_decision"
+        if decisions.decision_ready(state):
+            return "stopped"  # a choice is made; resuming applies it
         current, cap = answers.migrate(state), answers.max_spec_passes(log)
         if answers.awaiting_answers(current, cap) or answers.answers_ready(current, cap):
             return "needs_answers"
@@ -189,6 +262,7 @@ def load_runs(repo: Path, now: datetime | None = None) -> RunList:
                 started_at=state.started_at,
                 age=age(state.started_at, now),
                 work_item_file=state.work_item_file,
+                level=state.level.value,
             )
         )
     rows.sort(key=lambda r: r.started_at, reverse=True)
