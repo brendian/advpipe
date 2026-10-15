@@ -28,8 +28,10 @@ sys.path.insert(0, str(ROOT / "tests"))
 import uvicorn  # noqa: E402
 from fakes import (  # noqa: E402
     IMPL_OK,
+    IMPL_WRONG,
     TASK_MD,
     TASK_MD_BLOCKING,
+    TEST_CLAMP,
     FakeAgentRunner,
     author_response,
     finding,
@@ -40,8 +42,8 @@ from fakes import (  # noqa: E402
     writes,
 )
 
-from advpipe.config import Config, Gates, Limits  # noqa: E402
-from advpipe.models import RunState, Stage, Status  # noqa: E402
+from advpipe.config import Config, Gates, Limits, Pipeline  # noqa: E402
+from advpipe.models import Level, RunState, Stage, Status  # noqa: E402
 from advpipe.orchestrator import Orchestrator  # noqa: E402
 from advpipe.runlog import RunLog  # noqa: E402
 from advpipe.runner import Role  # noqa: E402
@@ -55,6 +57,10 @@ ITEMS = {
     "server/s01-clamp.md": "---\nname: s01-clamp\n---\nAdd clamp(x, lo, hi) to mathutils.\n",
     "server/s02-swap.md": "Decide what clamp does when lo > hi.\n",
     "mobile/m01-sign.md": "---\nname: m01-sign\n---\nAdd sign(x) to mathutils.\n",
+    # Starts the New run dialog's slider at the Tests level.
+    "server/s04-rounding.md": (
+        "---\nname: s04-rounding\nlevel: tests\n---\nRound refunds half-up, like the invoices.\n"
+    ),
 }
 
 
@@ -130,6 +136,20 @@ async def make_runs(repo: Path) -> None:
         work_item_file=str(repo / "work-items" / "server" / "s02-swap.md"),
     ).run()
 
+    # A Basic run whose checks stay red: the solo agent doesn't retry, so it asks the person.
+    solo_wrong = writes(
+        {"task.md": TASK_MD, "tests/test_clamp.py": TEST_CLAMP, **IMPL_WRONG},
+        "Wrote it in one pass.",
+    )
+    await Orchestrator(
+        config.model_copy(update={"pipeline": Pipeline(level=Level.BASIC)}),
+        FakeAgentRunner({Role.SOLO: [solo_wrong]}, cost_per_call=0.22),
+        repo,
+        "Make clamp return lo when x is below lo.",
+        "20261008-111500-rename",
+        name="s05-rename",
+    ).run()
+
     # A run that ran out of budget, written directly.
     log = RunLog.for_run(repo, "20261008-103000-sign")
     log.write_state(
@@ -202,7 +222,8 @@ SHOTS = [
     ("spec-context.png", "/runs/20261008-091500-clamp/context", 1280, 1100, False),
     ("work-items.png", "/items", 1280, 640, False),
     ("item-editor.png", "/items/edit?path=server/s01-clamp.md", 1280, 900, False),
-    ("new-run.png", "/runs/new?item=server/s01-clamp.md", 1280, 900, False),
+    ("new-run.png", "/runs/new?item=server/s04-rounding.md", 1280, 1500, False),
+    ("run-decision.png", "/runs/20261008-111500-rename", 1280, 1500, False),
     ("help.png", "/help", 1280, 1100, False),
     ("runs-dark.png", "/", 1280, 520, True),
     ("run-detail-tablet-dark.png", "/runs/20261008-091500-clamp", 768, 1300, True),

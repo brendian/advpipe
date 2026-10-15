@@ -43,6 +43,41 @@
     </label>
     <datalist id="run-config-files">{% for f in config_files %}<option value="{{ f }}"></option>{% endfor %}</datalist>
   </div>
+  <fieldset class="checking">
+    <legend>How much checking</legend>
+    <div class="level-slider">
+      {#- A range input with its labels as visible text under the track (a datalist alone
+          doesn't show labels in every browser). app.js sets aria-valuetext to the label. #}
+      <input type="range" name="level" min="1" max="5" step="1" value="{{ plan.number }}" list="level-ticks"
+             aria-label="How much checking: 1 is Basic, 5 is Full" aria-describedby="level-ticks-text">
+      <datalist id="level-ticks">
+        {%- for label in level_labels %}<option value="{{ loop.index }}" label="{{ label }}"></option>{% endfor %}
+      </datalist>
+      <ol class="level-ticks" id="level-ticks-text" aria-hidden="true">
+        {%- for label in level_labels %}<li{% if loop.index == plan.number %} class="on"{% endif %}>{{ label }}</li>{% endfor %}
+      </ol>
+    </div>
+    <div class="choice-row">
+      <span class="field-label" id="scan-label">Security scan</span>
+      <span role="radiogroup" aria-labelledby="scan-label">
+        <label class="choice"><input type="radio" name="scan" value="default"{% if form.scan == "default" %} checked{% endif %}> Default</label>
+        <label class="choice"><input type="radio" name="scan" value="on"{% if form.scan == "on" %} checked{% endif %}> On</label>
+        <label class="choice"><input type="radio" name="scan" value="off"{% if form.scan == "off" %} checked{% endif %}> Off</label>
+      </span>
+    </div>
+    <div class="choice-row">
+      <span class="field-label" id="policy-label">If it finds issues</span>
+      <span role="radiogroup" aria-labelledby="policy-label">
+        <label class="choice"><input type="radio" name="scan_failures" value="ask"{% if plan.failures == "ask" %} checked{% endif %}> Ask me</label>
+        <label class="choice"><input type="radio" name="scan_failures" value="ignore"{% if plan.failures == "ignore" %} checked{% endif %}> Ignore</label>
+        <label class="choice"><input type="radio" name="scan_failures" value="block"{% if plan.failures == "block" %} checked{% endif %}> Block</label>
+      </span>
+      <small class="muted">Only when the scan is on below Full: at Full the security reviewer checks each hit.</small>
+    </div>
+    <label class="choice"><input type="hidden" name="bypass_seen" value="1">
+      <input type="checkbox" name="bypass" value="yes"{% if plan.bypass %} checked{% endif %}>
+      Don't stop for questions: let the agent decide</label>
+  </fieldset>
   {#- Own hx-target and hx-swap: without them this inherits the form's, and every
       keystroke would replace the whole form with the summary. #}
   <div id="run-summary" hx-post="/runs/new/check" hx-trigger="input delay:400ms from:#run-form"

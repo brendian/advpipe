@@ -31,6 +31,12 @@ skill asks you in the session).
 > continue* (before the background process has written `running` to `run.json`). The
 > optional "copy answers into the work item" button wasn't built.
 
+> **Update (2026-10-14, `docs/LEVELS_PLAN.md`):** a person can also **Bypass** a question (the
+> agent answers it with its best judgement, marked as such in `task.md`), the solo agent at
+> levels Basic and Reviewer asks blocking questions through this same path (`answers.spec_stage`),
+> and after the last allowed spec pass the run stops at *Begin work?* (`advpipe decide <id>
+> begin`) instead of stopping for good.
+
 This plan is for **future Claude Code sessions**. Each milestone below (A0 to A2) is sized for
 one session and ends with tests. See [How to use this plan](#how-to-use-this-plan-in-a-session).
 Read `CLAUDE.md` and `docs/ARCHITECTURE.md` first. Paths and names below are from the code as

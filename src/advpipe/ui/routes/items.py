@@ -29,6 +29,9 @@ FIX_FIRST = "Not saved: fix the problems marked below first."
 # Form field limits, so a request can't make the server hold huge strings.
 Field = Annotated[str, Form(max_length=items.MAX_BYTES)]
 Short = Annotated[str, Form(max_length=300)]
+# A run setting from a select: None when the form didn't carry it, '' when it's inherited.
+Setting = Annotated[str | None, Form(max_length=300)]
+INHERIT = "inherit"
 
 
 def _page(
@@ -141,6 +144,24 @@ def _editor(
     )
 
 
+def _settings(
+    level: str | None,
+    security_scan: str | None,
+    scan_failures: str | None,
+    bypass_questions: str | None,
+) -> dict[str, str | None]:
+    """The run settings the form sent. ``inherit`` (the selects' first option) means the file
+    leaves the key out; a form without the field (None) keeps the file's. (An empty option
+    value can't mean "inherit": FastAPI reads an empty form value as missing.)"""
+    given = {
+        "level": level,
+        "security_scan": security_scan,
+        "scan_failures": scan_failures,
+        "bypass_questions": bypass_questions,
+    }
+    return {key: ("" if value == INHERIT else value) for key, value in given.items()}
+
+
 @router.get("/items/new", response_class=HTMLResponse)
 def new_item_page(request: Request, folder: str = "") -> HTMLResponse:
     rel = f"{folder.strip('/')}/" if folder.strip("/") else ""
@@ -155,9 +176,16 @@ def create_item(
     name: Short = "",
     config: Short = "",
     then: Short = "",
+    level: Setting = None,
+    security_scan: Setting = None,
+    scan_failures: Setting = None,
+    bypass_questions: Setting = None,
 ) -> Response:
     ui = ui_config(request)
-    draft = items.from_form(items.with_suffix(path) if path.strip() else "", name, config, body)
+    settings = _settings(level, security_scan, scan_failures, bypass_questions)
+    draft = items.from_form(
+        items.with_suffix(path) if path.strip() else "", name, config, body, settings=settings
+    )
     checked = items.check_draft(ui.repo, draft)
     if not checked.ok:
         return _editor(request, draft, new=True, errors=[FIX_FIRST], fragment=True)
@@ -206,9 +234,14 @@ def save_item(
     name: Short = "",
     config: Short = "",
     then: Short = "",
+    level: Setting = None,
+    security_scan: Setting = None,
+    scan_failures: Setting = None,
+    bypass_questions: Setting = None,
 ) -> Response:
     ui = ui_config(request)
-    draft = items.from_form(path, name, config, body, base)
+    settings = _settings(level, security_scan, scan_failures, bypass_questions)
+    draft = items.from_form(path, name, config, body, base, settings)
     try:
         items.item_path(ui.items_dir, path)
     except ItemPathError as e:
@@ -245,11 +278,19 @@ def save_item(
 
 @router.post("/items/preview", response_class=HTMLResponse)
 def preview(
-    request: Request, body: Field = "", name: Short = "", config: Short = ""
+    request: Request,
+    body: Field = "",
+    name: Short = "",
+    config: Short = "",
+    level: Setting = None,
+    security_scan: Setting = None,
+    scan_failures: Setting = None,
+    bypass_questions: Setting = None,
 ) -> HTMLResponse:
     """The preview pane and the inline checks, re-fetched as the user types."""
     ui = ui_config(request)
-    draft = items.from_form("", name, config, body)
+    settings = _settings(level, security_scan, scan_failures, bypass_questions)
+    draft = items.from_form("", name, config, body, settings=settings)
     return _page(
         request,
         "_item_preview.html",

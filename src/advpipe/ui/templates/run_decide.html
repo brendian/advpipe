@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{#- Taking over, or stopping, ends the run: this page says exactly what happens, and only its
+    form sends confirm=yes. #}
+{% block title %}{{ {"takeover": "Take over", "stop": "Stop", "finish": "Finish"}[choice] }} {{ run_id }}?{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/runs/{{ run_id }}">← Back to the run</a></p>
+{%- if choice == "takeover" %}
+<h1>Take over run <code>{{ run_id }}</code>?</h1>
+<p>You'll finish this by hand. Taking over ends the run:</p>
+<ul>
+  <li>the work as it is now, checks failing or not, is committed to its branch
+    {%- if info.branch %} <code>{{ info.branch }}</code>{% endif %}
+    (nothing is committed if there's nothing new);</li>
+  {%- if info.worktree %}
+  <li>its working copy <code>{{ info.worktree }}</code> is removed, so you can check the branch out;</li>
+  {%- endif %}
+  <li>the run can't be resumed or decided again. The branch stays.</li>
+</ul>
+{%- elif choice == "finish" %}
+<h1>Finish run <code>{{ run_id }}</code> as it is?</h1>
+<p>A usage limit stopped this run part-way through. Finishing ends it here:</p>
+<ul>
+  <li>nothing is committed: the work so far stays in its working copy
+    {%- if info.worktree %} <code>{{ info.worktree }}</code>{% endif %}, uncommitted, for you to look at
+    (<code>git -C &lt;working copy&gt; status</code>) and do with as you please;</li>
+  <li>the branch{% if info.branch %} <code>{{ info.branch }}</code>{% endif %} keeps the commits of the steps that finished;</li>
+  <li>the run can't be resumed or decided again. Cleaning it up later refuses to delete the uncommitted
+    work unless you say so.</li>
+</ul>
+{%- else %}
+<h1>Stop run <code>{{ run_id }}</code> here?</h1>
+<p>Stopping ends the run: nothing is written to the branch, and it can't be resumed. Its log
+  and the last <code>task.md</code> stay in <code>.advpipe/runs/{{ run_id }}/</code>.</p>
+{%- endif %}
+<form class="item-form" method="post" action="/runs/{{ run_id }}/decide" hx-post="/runs/{{ run_id }}/decide" hx-target="#action-result">
+  <input type="hidden" name="choice" value="{{ choice }}">
+  <input type="hidden" name="confirm" value="yes">
+  <div id="action-result" aria-live="polite"></div>
+  <div class="form-actions">
+    <button type="submit" class="button danger">{{ {"takeover": "Take over", "stop": "Stop the run", "finish": "Finish as is"}[choice] }}</button>
+    <a href="/runs/{{ run_id }}">Keep it {{ "paused" if choice == "finish" else "waiting" }}</a>
+  </div>
+</form>
+{% endblock %}

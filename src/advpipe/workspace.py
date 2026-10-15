@@ -123,12 +123,19 @@ class Workspace:
         return cls(repo, path, branch)
 
     @classmethod
-    def reopen(cls, repo: Path, path: Path, branch: str) -> Workspace:
-        """Reattach to a run's worktree, discarding uncommitted work from an interrupted stage."""
+    def reopen(
+        cls, repo: Path, path: Path, branch: str, *, keep_changes: bool = False
+    ) -> Workspace:
+        """Reattach to a run's worktree, discarding uncommitted work from an interrupted stage.
+
+        ``keep_changes``: leave the uncommitted work alone. Used when a person has just
+        decided what to do about it (docs/LEVELS_PLAN.md §3.5).
+        """
         repo = Path(git(repo, "rev-parse", "--show-toplevel").strip())
         if path.is_dir():
-            git(path, "reset", "-q", "--hard", "HEAD")
-            git(path, "clean", "-q", "-fd")
+            if not keep_changes:
+                git(path, "reset", "-q", "--hard", "HEAD")
+                git(path, "clean", "-q", "-fd")
         else:
             git(repo, "worktree", "prune")
             git(repo, "worktree", "add", "-q", str(path), branch)
@@ -137,6 +144,10 @@ class Workspace:
     def remove(self) -> None:
         """Delete the worktree directory. The branch (and all committed work) is kept."""
         git(self.repo, "worktree", "remove", "--force", str(self.path))
+
+    def has_changes(self) -> bool:
+        """Whether anything in the worktree is uncommitted (changed, staged or untracked)."""
+        return bool(git(self.path, "status", "--porcelain").strip())
 
     def head(self) -> str:
         return git(self.path, "rev-parse", "HEAD").strip()

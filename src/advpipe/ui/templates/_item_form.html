@@ -28,6 +28,43 @@
     </label>
     <datalist id="config-files">{% for f in config_files %}<option value="{{ f }}"></option>{% endfor %}</datalist>
   </div>
+  <fieldset class="checking">
+    <legend>How runs of this item go <span class="muted">(optional: left empty, they follow the config)</span></legend>
+    <div class="field-row">
+      <label class="field"><span>Level</span>
+        <select name="level">
+          <option value="inherit">Inherit (from the config)</option>
+          {%- for lv in level_options %}
+          <option value="{{ lv.value }}"{% if draft.setting("level") == lv.value %} selected{% endif %}>{{ lv.number }}. {{ lv.label }}</option>
+          {%- endfor %}
+        </select>
+        <small>How much checking: 1 (Basic) to 5 (Full). The New run dialog's slider can still override it.</small>
+      </label>
+      <label class="field"><span>Security scan</span>
+        <select name="security_scan">
+          <option value="inherit">Level default (on at Full only)</option>
+          <option value="yes"{% if draft.setting("security_scan") == "yes" %} selected{% endif %}>On</option>
+          <option value="no"{% if draft.setting("security_scan") == "no" %} selected{% endif %}>Off</option>
+        </select>
+      </label>
+      <label class="field"><span>If the scan finds issues</span>
+        <select name="scan_failures">
+          <option value="inherit">Inherit (ask me, unless the config says otherwise)</option>
+          <option value="ask"{% if draft.setting("scan_failures") == "ask" %} selected{% endif %}>Ask me</option>
+          <option value="ignore"{% if draft.setting("scan_failures") == "ignore" %} selected{% endif %}>Ignore</option>
+          <option value="block"{% if draft.setting("scan_failures") == "block" %} selected{% endif %}>Block</option>
+        </select>
+        <small>Only when the scan is on below Full.</small>
+      </label>
+      <label class="field"><span>Don't stop for questions</span>
+        <select name="bypass_questions">
+          <option value="inherit">Inherit (ask me, unless the config says otherwise)</option>
+          <option value="yes"{% if draft.setting("bypass_questions") == "yes" %} selected{% endif %}>Yes: let the agent decide</option>
+          <option value="no"{% if draft.setting("bypass_questions") == "no" %} selected{% endif %}>No: ask me</option>
+        </select>
+      </label>
+    </div>
+  </fieldset>
   <div class="editor">
     <label class="field"><span>Work item <span class="muted">(markdown)</span></span>
       <textarea name="body" rows="22" required spellcheck="true"

@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from advpipe.runner import AgentRequest, AgentResult, Role
+from advpipe.models import LoginKind, RateLimitSnapshot
+from advpipe.runner import AgentRequest, AgentResult, Role, UsageLimitReached
 
 # A scripted step: a literal reply, or a function that may edit req.cwd and returns the reply.
-Step = str | Callable[[AgentRequest], str]
+# A step may also be (or return) an AgentResult, to script a login and usage snapshots (`said`),
+# and a function may raise UsageLimitReached, as the SDK runner does (`limit_hit`).
+Step = str | AgentResult | Callable[[AgentRequest], "str | AgentResult"]
 
 
 class FakeAgentRunner:
@@ -21,12 +25,14 @@ class FakeAgentRunner:
         *,
         name: str = "",
         events: list[tuple[str, Role]] | None = None,
+        auth: LoginKind = "unknown",
     ) -> None:
         self.scripts = {role: list(steps) for role, steps in scripts.items()}
         self.cost_per_call = cost_per_call
         self.calls: list[AgentRequest] = []
         self.name = name
         self.events = events if events is not None else []
+        self.auth = auth  # the login every plain reply says it ran under
 
     async def run(self, request: AgentRequest) -> AgentResult:
         await asyncio.sleep(0)  # yield, so concurrent runs really interleave
@@ -36,8 +42,10 @@ class FakeAgentRunner:
         if not queue:
             raise AssertionError(f"unexpected call to {request.role.value}")
         step = queue.pop(0)
-        text = step(request) if callable(step) else step
-        return AgentResult(text=text, cost_usd=self.cost_per_call)
+        out = step(request) if callable(step) else step
+        if isinstance(out, AgentResult):
+            return out
+        return AgentResult(text=out, cost_usd=self.cost_per_call, auth=self.auth)
 
     def calls_for(self, role: Role) -> list[AgentRequest]:
         return [c for c in self.calls if c.role == role]
@@ -57,6 +65,68 @@ def writes(files: dict[str, str], reply: str = "done") -> Step:
         return reply
 
     return step
+
+
+def said(
+    text: str,
+    *,
+    auth: LoginKind = "unknown",
+    snapshots: tuple[RateLimitSnapshot, ...] = (),
+    cost: float = 0.01,
+) -> AgentResult:
+    """A reply that also says which login it ran under and what usage Claude reported."""
+    return AgentResult(text=text, cost_usd=cost, auth=auth, rate_limits=snapshots)
+
+
+def limit_hit(
+    *,
+    window: str | None = "five_hour",
+    billing: bool = False,
+    cost: float = 0.02,
+    auth: LoginKind = "subscription",
+    files: dict[str, str] | None = None,
+    resets_in_s: int = 3600,
+) -> Step:
+    """A step that writes ``files`` (partial work), then hits a usage limit, as the SDK runner
+    raises it: a rejected subscription window, or (``billing``) the Console balance running out."""
+
+    def step(req: AgentRequest) -> str:
+        for rel, content in (files or {}).items():
+            path = req.cwd / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        snap = None
+        if window and not billing:
+            snap = RateLimitSnapshot(
+                window=window,
+                status="rejected",
+                utilization=1.0,
+                resets_at=datetime.now(UTC) + timedelta(seconds=resets_in_s),
+            )
+        raise UsageLimitReached(
+            "a limit was reached",
+            billing=billing,
+            snapshot=snap,
+            cost_usd=cost,
+            auth="console" if billing else auth,
+            rate_limits=(snap,) if snap else (),
+        )
+
+    return step
+
+
+def snap(
+    window: str = "five_hour",
+    status: str = "allowed",
+    utilization: float | None = 0.62,
+    resets_in_s: int | None = 3600,
+) -> RateLimitSnapshot:
+    return RateLimitSnapshot(
+        window=window,
+        status=status,  # type: ignore[arg-type]
+        utilization=utilization,
+        resets_at=datetime.now(UTC) + timedelta(seconds=resets_in_s) if resets_in_s else None,
+    )
 
 
 def finding(

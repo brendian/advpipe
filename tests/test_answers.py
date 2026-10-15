@@ -265,22 +265,24 @@ async def test_spec_pass_cap(target_repo: Path, config: Config) -> None:
 
     assert state.status is Status.NEEDS_HUMAN and state.spec_passes == 2
     assert not answers.awaiting_answers(state, 2)
-    assert any("start a new run" in n for n in state.notes)
+    # Not asked one more time: the run stops at the "Begin work?" decision point (L3).
+    assert state.decision is not None and state.decision.kind == "spec_cap"
     (event,) = [e for e in events(target_repo) if e["kind"] == "questions" and e["ids"] == ["Q2"]]
-    assert event["answerable"] is False
-    with pytest.raises(AnswerError, match="after 2 spec pass.*start a new run"):
+    assert event["answerable"] is False and "advpipe decide r1 begin | stop" in event["message"]
+    with pytest.raises(AnswerError, match="after 2 spec pass.*advpipe decide r1 begin"):
         record_answers(target_repo, "r1", {"Q2": "answers"})
-    with pytest.raises(NotResumable, match="nothing to resume"):
+    with pytest.raises(NotResumable, match="waiting for a decision: advpipe decide r1 begin"):
         check_resumable(target_repo, "r1")
     report = (logdir(target_repo) / "report.md").read_text()
     assert "advpipe answer" not in report and "(not answered)" in report
+    assert "Begin work anyway?" in report and "advpipe decide r1 begin | stop" in report
 
 
 async def test_cap_of_one_means_no_answering(config: Config, target_repo: Path) -> None:
     one = config.model_copy(update={"limits": Limits(budget_usd_per_task=5, max_rounds_spec=1)})
     state = await blocked_run(one, target_repo)
     assert not answers.awaiting_answers(state, 1)
-    with pytest.raises(AnswerError, match="start a new run"):
+    with pytest.raises(AnswerError, match="advpipe decide r1 begin"):
         record_answers(target_repo, "r1", {"Q1": ANSWER})
 
 

@@ -70,6 +70,7 @@ def test_help_shows_the_real_defaults(target_repo: Path) -> None:
         "spec-writer": "changes files",
         "test-author": "changes files",
         "coder": "changes files",
+        "solo": "changes files",
         "test-critic": "read-only",
         "code-critic": "read-only",
         "standards-reviewer": "read-only",

@@ -25,6 +25,8 @@ EventKind = Literal[
     "error",
     "questions",
     "answers",
+    "decision",
+    "usage",
 ]
 
 

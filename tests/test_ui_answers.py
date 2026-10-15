@@ -109,7 +109,7 @@ def test_answers_saved_but_not_resumed_prefill_the_form(config: Config, target_r
     record_answers(repo, "r1", {"Q1": ANSWER})  # e.g. advpipe answer --no-resume
     page = Browser(repo).get("/runs/r1").text
     assert "? needs answers" in page
-    assert f'name="answer_Q1" rows="3" required maxlength="{MAX_ANSWER_CHARS}">{ANSWER}' in page
+    assert f'name="answer_Q1" rows="3" maxlength="{MAX_ANSWER_CHARS}">{ANSWER}' in page
 
 
 # --------------------------------------------------------------------------- posting answers

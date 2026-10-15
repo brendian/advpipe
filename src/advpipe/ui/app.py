@@ -13,6 +13,8 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from starlette.exceptions import HTTPException
 
+from advpipe.levels import LEVEL_INFO, LEVEL_ORDER, level_number
+from advpipe.models import Level
 from advpipe.ui.routes import actions, help, items, run_detail, runs
 from advpipe.ui.security import LOOPBACK_HOSTS, GuardMiddleware
 from advpipe.ui.state import UiConfig, ui_config
@@ -47,6 +49,14 @@ def create_ui_app(
         autoescape=True,
         undefined=StrictUndefined,
     )
+
+    # The slider's labels, and a level's place on it, from levels.py like everything else.
+    env.globals["level_labels"] = [LEVEL_INFO[level].label for level in LEVEL_ORDER]
+    env.globals["level_options"] = [
+        {"value": level.value, "number": level_number(level), "label": LEVEL_INFO[level].label}
+        for level in LEVEL_ORDER
+    ]
+    env.filters["level_number"] = lambda value: level_number(Level(value))
 
     def context(request: Request) -> dict[str, Any]:
         return {"repo_name": repo.name, "csrf_token": csrf_token, "nav": NAV}

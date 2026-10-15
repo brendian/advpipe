@@ -53,6 +53,37 @@
   });
   document.addEventListener("htmx:afterSettle", function () { panels = null; });
 
+  // The level slider (New run dialog): a screen reader says "Tests", not "3", and the slider
+  // follows the level the chosen work item (or the config) asks for until the person moves it
+  // themselves. Without this script everything still works: the summary says which level the
+  // run gets and why.
+  function levelSlider() {
+    return document.querySelector("input[type=range][name=level]");
+  }
+  function sayLevel(slider) {
+    var option = document.querySelector("#level-ticks option[value='" + slider.value + "']");
+    if (option) slider.setAttribute("aria-valuetext", option.getAttribute("label"));
+  }
+  var slider = levelSlider();
+  if (slider) {
+    sayLevel(slider);
+    slider.addEventListener("input", function (event) {
+      if (event.isTrusted) slider.setAttribute("data-touched", "yes");
+      sayLevel(slider);
+    });
+  }
+  document.addEventListener("htmx:afterSettle", function (event) {
+    var card = document.querySelector("#run-summary .level-card[data-inherited-level]");
+    var current = levelSlider();
+    if (!card || !current || current.getAttribute("data-touched") === "yes") return;
+    var inherited = card.getAttribute("data-inherited-level");
+    if (inherited && current.value !== inherited) {
+      current.value = inherited;
+      sayLevel(current);
+      current.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+
   // Theme button: system setting -> dark -> light -> system. The choice is kept in this
   // browser's storage; theme.js applies it on the next page before it's drawn.
   var THEMES = ["system", "dark", "light"];

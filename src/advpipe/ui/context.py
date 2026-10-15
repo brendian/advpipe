@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -18,7 +19,8 @@ from markupsafe import Markup
 from pydantic import ValidationError
 
 from advpipe.config import Config, Paths
-from advpipe.models import RunState
+from advpipe.levels import SHAPES, roles_for
+from advpipe.models import Level, OpenQuestion, RunState
 from advpipe.runlog import RunLog
 from advpipe.runner import ROLE_MODEL, ROLE_TOOLS, Role, load_prompt
 from advpipe.stages import ALL_GATES
@@ -57,6 +59,56 @@ SEEN_BY = {
     ),
 }
 
+
+def _names(roles: Sequence[Role]) -> str:
+    return ", ".join(role.value.replace("-", " ") for role in roles)
+
+
+def seen_by_for(level: Level) -> dict[str, str]:
+    """``SEEN_BY`` for a run at ``level``: the same text at full, and at the other levels only
+    the agents that level has (no mention of critics where there are none)."""
+    if level is Level.FULL:
+        return SEEN_BY
+    roles = roles_for(level)
+    solo = SHAPES[level].solo
+    writer = Role.SOLO if solo else Role.SPEC_WRITER
+    readers = [r for r in roles if r not in (Role.SOLO, Role.SPEC_WRITER)]
+    judges = [r for r in roles if r.value.endswith(("critic", "reviewer")) or r is Role.ARBITER]
+    authors = [r for r in roles if r in (Role.SOLO, Role.TEST_AUTHOR, Role.CODER)]
+    out = dict(SEEN_BY)
+    out["work_item"] = (
+        "The solo agent only: it writes task.md from it itself." if solo else SEEN_BY["work_item"]
+    )
+    out["task_md"] = (
+        f"Written by the {writer.value.replace('-', ' ')}. "
+        + (
+            f"Every other agent at this level gets it in its prompt: {_names(readers)}."
+            if readers
+            else "No other agent at this level reads it: it's the record of what was asked."
+        )
+        + (
+            " Critics cite its acceptance criteria (AC1, AC2, ...) in their findings."
+            if any(r.value.endswith("critic") for r in roles)
+            else ""
+        )
+    )
+    out["checks"] = (
+        f"The {_names(authors)} get the check commands in their prompt and run them."
+        + (
+            " The critic, reviewers and arbiter get the check output, never the author's reasoning."
+            if judges
+            else ""
+        )
+    )
+    if Role.STANDARDS_REVIEWER not in roles:
+        out["standards"] = (
+            "No agent at this level reads it directly: there's no standards reviewer. "
+            "Separately, Claude Code loads the repo's CLAUDE.md into every agent's context "
+            "(advpipe uses the project's settings)."
+        )
+    return out
+
+
 # What each role gets in its (user) prompt, from stages.py.
 ROLE_INPUTS: dict[Role, str] = {
     Role.SPEC_WRITER: "the work item",
@@ -68,6 +120,11 @@ ROLE_INPUTS: dict[Role, str] = {
     Role.CODER: (
         "task.md, the check commands and the list of test files; in later rounds, the findings "
         "to address and the latest check output"
+    ),
+    Role.SOLO: (
+        "the work item and the check commands; after answers, its previous task.md and the "
+        "questions with their answers; in later passes, the findings to address, the latest "
+        "check output and any note from you"
     ),
     Role.CODE_CRITIC: "task.md, the list of test files, the diff, and the check output",
     Role.STANDARDS_REVIEWER: "task.md, the full diff, the check output, and the standards doc",
@@ -145,6 +202,7 @@ class RunContext:
     standards: StandardsView
     roles: list[RoleView]
     seen_by: dict[str, str]
+    answers: list[OpenQuestion]  # blocking questions with an answer, from you or the agent
 
     @property
     def info(self) -> StatusInfo:
@@ -205,10 +263,11 @@ def _standards(repo: Path, state: RunState, cfg: Config | None) -> StandardsView
     return StandardsView(path, None, "")
 
 
-def _roles(cfg: Config | None) -> list[RoleView]:
+def _roles(cfg: Config | None, level: Level) -> list[RoleView]:
+    """The roles a run at ``level`` can call (the others never see anything)."""
     models = (cfg or Config()).models
     views = []
-    for role in Role:
+    for role in roles_for(level):
         try:
             prompt: Markup | None = markdown(load_prompt(role))
         except OSError:
@@ -251,6 +310,7 @@ def load_context(repo: Path, run_id: str) -> RunContext | None:
         config=config,
         checks=_checks(config.config) if config.config else [],
         standards=_standards(repo, state, config.config),
-        roles=_roles(config.config),
-        seen_by=SEEN_BY,
+        roles=_roles(config.config, state.level),
+        seen_by=seen_by_for(state.level),
+        answers=[q for q in state.questions if q.answer],
     )

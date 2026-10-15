@@ -94,8 +94,23 @@ class ArbiterRuling(BaseModel):
     rulings: list[Ruling] = Field(default_factory=list)
 
 
+class Level(StrEnum):
+    """How much checking a run gets, from one agent (basic) to the whole pipeline (full).
+    What each level runs is in levels.py (``SHAPES``); a person picks it, never an agent."""
+
+    BASIC = "basic"
+    REVIEWER = "reviewer"
+    TESTS = "tests"
+    ADVERSARIAL = "adversarial"
+    FULL = "full"
+
+
+ScanPolicy = Literal["ask", "ignore", "block"]
+
+
 class Stage(StrEnum):
     INIT = "INIT"
+    SOLO = "SOLO"  # levels basic and reviewer: one agent writes task.md, tests and code
     SPEC = "SPEC"
     TESTS = "TESTS"
     CODE = "CODE"
@@ -141,6 +156,66 @@ class OpenQuestion(BaseModel):
     answer: str = ""  # empty until answered
     answered_at: datetime | None = None
     applied: bool = False  # a spec revision has been given this answer
+    # Bypass (docs/LEVELS_PLAN.md §3.6): the person chose to let the agent decide. The answer
+    # then comes from the agent, with its one-paragraph reason, and `source` says so.
+    source: Literal["person", "agent"] = "person"
+    reasoning: str = ""
+    bypassed: bool = False  # the person chose Bypass; the agent's answer may not exist yet
+
+
+class BypassAnswer(BaseModel):
+    id: str
+    answer: str = ""
+    reasoning: str = ""
+
+
+class BypassAnswers(BaseModel):
+    """An agent's reply when a person chose Bypass: its own answer to each question."""
+
+    answers: list[BypassAnswer] = Field(default_factory=list)
+
+
+DecisionKind = Literal["red_checks", "scan_hits", "usage_limit", "spec_cap"]
+
+
+# What a person can choose at each kind of decision point (see decisions.py).
+DECISION_CHOICES: dict[DecisionKind, tuple[str, ...]] = {
+    "red_checks": ("fix", "takeover"),
+    "scan_hits": ("ignore", "block"),
+    "usage_limit": ("retry", "finish"),
+    "spec_cap": ("begin", "stop"),
+}
+
+
+LoginKind = Literal["console", "subscription", "unknown"]
+
+
+class RateLimitSnapshot(BaseModel):
+    """What Claude last reported about one usage window (a subscription's 5-hour or weekly
+    limit). Only these fields are kept, never the raw event (docs/LEVELS_PLAN.md §3.15)."""
+
+    window: str  # five_hour, seven_day, seven_day_opus, seven_day_sonnet, overage
+    status: Literal["allowed", "allowed_warning", "rejected"]
+    utilization: float | None = None  # 0.0 to 1.0
+    resets_at: datetime | None = None
+    seen_at: datetime = Field(default_factory=_now)
+
+
+class Decision(BaseModel):
+    """A stop where the run waits for a person to pick one of two choices (docs/LEVELS_PLAN.md
+    §3.5). The run stays ``needs_human``; nothing picks a choice but a person."""
+
+    kind: DecisionKind
+    stage: Stage  # where the run stopped
+    asked_at: datetime = Field(default_factory=_now)
+    explanation: str  # plain words, shown to the person as is
+    findings: list[Finding] = Field(default_factory=list)  # failing checks, scanner hits
+    usage: RateLimitSnapshot | None = None  # usage_limit: the subscription window that ran out
+    billing: bool = False  # usage_limit: the Console credit balance ran out
+    choice: str = ""  # set by the person
+    note: str = ""  # red_checks + fix: the person's note, verbatim
+    decided_at: datetime | None = None
+    applied: bool = False  # the choice has been acted on
 
 
 class RunState(BaseModel):
@@ -174,6 +249,28 @@ class RunState(BaseModel):
     # (see answers.py), and how many spec-writer passes have finished (1 after the first spec).
     questions: list[OpenQuestion] = Field(default_factory=list)
     spec_passes: int = 0
+    # Set when the run is created and never changed, resume included (docs/LEVELS_PLAN.md).
+    # Runs recorded before levels existed load as full with the security scan on.
+    level: Level = Level.FULL
+    security_scan: bool | None = None  # None: an old run, so the level's default
+    # What a failing security scan below full means: "block" makes its hits blocking findings.
+    scan_policy: ScanPolicy = "ask"
+    # Bypass up front: blocking questions never stop the run; the agent answers them (L2).
+    bypass_questions: bool = False
+    # Every decision point the run stopped at, in order (the last one is the open or latest).
+    decisions: list[Decision] = Field(default_factory=list)
+    fix_passes: int = 0  # extra fix passes a person asked for
+    # How a run ended at a decision point: the person took over, or chose to stop.
+    ended_by: Literal["", "takeover", "stop", "finish"] = ""
+    # Which login the agents ran under, as far as Claude reported it (docs/LEVELS_PLAN.md §3.15),
+    # and the latest usage snapshot per window. Old runs load as "unknown" with no snapshots.
+    auth: LoginKind = "unknown"
+    rate_limits: dict[str, RateLimitSnapshot] = Field(default_factory=dict)
+
+    @property
+    def decision(self) -> Decision | None:
+        """The open decision point, or the latest one."""
+        return self.decisions[-1] if self.decisions else None
 
 
 RESUMABLE = frozenset({Status.RUNNING, Status.ERROR, Status.BUDGET_EXCEEDED})

@@ -57,6 +57,13 @@ The human (Brendan) is always the final reviewer. The pipeline's job is to make 
 7. **Ground truth beats opinion.** If a gate fails, that is a blocking finding automatically. Agents
    never argue with the test runner.
 
+> **Note (2026-10-14, `docs/LEVELS_PLAN.md`).** Rules 2, 4 and 6 apply at the levels that have
+> the agents they govern: the lower levels (Basic, Reviewer, Tests) drop agents to spend less on
+> small changes. The default level, `full`, applies all seven rules. Rules 1, 5 and 7 hold at
+> every level. Blocking questions can be answered or bypassed (the agent decides), and red gates
+> and the other stops that need a person end at a *decision point* (`advpipe decide`), not at a
+> dead end.
+
 ---
 
 ## 2. Tech choices

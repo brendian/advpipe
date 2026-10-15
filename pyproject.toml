@@ -40,6 +40,10 @@ line-length = 100
 target-version = "py311"
 extend-exclude = ["tests/fixtures"]
 
+[tool.ruff.format]
+# Its code blocks are aligned by hand, for reading.
+exclude = ["docs/LEVELS_PLAN.md"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 

@@ -25,6 +25,9 @@
         <div class="prose">{{ step.task_md | safe }}</div>
       </details>
       {%- endif %}
+      {%- if step.rulings_note %}
+      <p class="muted">{{ step.rulings_note }}</p>
+      {%- endif %}
       {%- if step.rulings %}
       <table class="rulings">
         <thead><tr><th scope="col">Finding</th><th scope="col">Ruling</th><th scope="col">Reason</th></tr></thead>

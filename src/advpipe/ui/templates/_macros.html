@@ -5,6 +5,32 @@
 <button type="button" class="copy" data-copy="{{ target }}" aria-label="Copy to clipboard">Copy</button>
 {%- endmacro %}
 
+{#- The login and last known usage, small: "5-hour 62%, resets 14:00". Claude reports usage only
+    when it changes, so the figures say how old they are and are never a live gauge. -#}
+{% macro usage_line(u) -%}
+<div class="usage" role="group" aria-label="Login and usage">
+  <span class="chip chip-login chip-login-{{ u.login }}" title="{{ u.cost_label | capitalize }}">{{ u.login_label }}</span>
+  {%- for m in u.meters %}
+  <span class="usage-meter usage-{{ m.status }}{% if m.stale %} usage-stale{% endif %}" title="Last seen {{ m.seen }}">
+    <span class="usage-label">{{ m.label }}</span>
+    {%- if m.percent is not none %}<meter min="0" max="100" value="{{ m.percent }}" low="60" high="80" optimum="0">{{ m.percent }}%</meter>{% endif %}
+    <span class="usage-text">{{ m.text }}</span>
+  </span>
+  {%- endfor %}
+  {%- if not u.meters %}<span class="muted usage-note">{{ u.note }}</span>{% endif %}
+</div>
+{%- if u.warn %}
+<p class="warning">{{ u.warn }}</p>
+{%- endif %}
+{%- endmacro %}
+
+{#- Shown wherever a form starts or restarts agent work, when it will cost real money. -#}
+{% macro console_box(u, budget) -%}
+{%- if u.console %}
+<p class="warning console-warning">{{ u.console_text(budget) }}</p>
+{%- endif %}
+{%- endmacro %}
+
 {% macro finding_card(f) -%}
 <article class="finding sev-{{ f.severity }}">
   <header>
@@ -89,6 +115,20 @@
 <details class="round" id="{{ panel_id }}"{% if open %} open{% endif %}>
   <summary><strong>{{ r.title }}</strong>{% if r.outcome %} <span class="muted">· {{ r.outcome }}</span>{% endif %}</summary>
   <div class="round-body">
+    {%- if r.notice %}
+    <p class="muted">{{ r.notice }}</p>
+    {%- endif %}
+    {%- if r.decision %}
+    <p>{{ r.decision.explanation }}</p>
+    {%- for f in r.decision.findings %}
+    {{ finding_card(f) }}
+    {%- endfor %}
+    <p><strong>You chose:</strong> {{ r.decision.choice }}{% if r.decision.applied %}{% else %} <span class="muted">(not acted on yet)</span>{% endif %}</p>
+    {%- if r.decision.note %}
+    <p><strong>Your note:</strong></p>
+    <pre class="output">{{ r.decision.note }}</pre>
+    {%- endif %}
+    {%- endif %}
     {%- if r.author is not none %}
     <details class="reply" id="{{ panel_id }}-reply">
       <summary>What the {{ r.author_role }} replied</summary>
@@ -107,8 +147,13 @@
       <ul>
         {%- for q in r.asked %}
         <li><strong>{{ q.id }}</strong> {{ q.text }}
-          {%- if q.answer %}
+          {%- if q.answer and q.source == "agent" %}
+          <div class="answer"><span class="tag tag-agent" title="You chose Bypass: the agent decided this one">agent's best judgement</span>
+            <span class="answer-text">{{ q.answer }}</span>
+            {%- if q.reasoning %}<div class="muted">Reason: {{ q.reasoning }}</div>{% endif %}</div>
+          {%- elif q.answer %}
           <div class="answer"><span class="muted">Your answer:</span> <span class="answer-text">{{ q.answer }}</span></div>
+          {%- elif q.bypassed %} <span class="muted">(you chose Bypass: the agent decides when the run continues)</span>
           {%- else %} <span class="muted">(not answered)</span>{% endif %}</li>
         {%- endfor %}
       </ul>

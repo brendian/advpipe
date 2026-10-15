@@ -11,9 +11,11 @@
 
 <nav class="toc" aria-label="On this page">
   <ul>
+    <li><a href="#levels">Levels: how much checking</a></li>
     <li><a href="#steps">The steps</a></li>
     <li><a href="#agents">The agents</a></li>
     <li><a href="#checks">Checks</a></li>
+    <li><a href="#asks">When a run asks you</a></li>
     <li><a href="#statuses">Run statuses</a></li>
     <li><a href="#pages">Using this UI</a></li>
     <li><a href="#safety">Money and safety</a></li>
@@ -21,12 +23,64 @@
   </ul>
 </nav>
 
+<section class="help-block" id="levels">
+  <h2>Levels: how much checking</h2>
+  <p>Every run has a <strong>level</strong>, picked by you (the slider in the New run dialog, or
+    <code>--level</code>, or the work item's <code>level:</code>) and never changed by an agent. A
+    lower level uses fewer agents, so it's quicker and cheaper, and checks less. Your project's own
+    checks (tests, types, lint) run at every level and must be green for a run to be complete.</p>
+  <div class="table-wrap">
+  <table class="help-table">
+    <thead><tr><th scope="col">Level</th><th scope="col">Agents</th><th scope="col">Steps</th><th scope="col">Agent calls</th><th scope="col">Good for</th><th scope="col">Scan by default</th></tr></thead>
+    <tbody>
+      {%- for l in levels %}
+      <tr>
+        <td><strong>{{ l.number }}. {{ l.label }}</strong><div class="sub muted"><code>{{ l.name }}</code></div></td>
+        <td>{{ l.agents }}</td>
+        <td>{{ l.steps }}</td>
+        <td>{{ l.calls }}</td>
+        <td>{{ l.good_for }}</td>
+        <td>{{ l.scan }}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted">Agent calls: the number between starting and the next time the run stops for you,
+    with the default round limits, if all goes well, or up to the most it can make.</p>
+  <dl class="help-defs">
+    {%- for l in levels %}
+    <div><dt>{{ l.label }}</dt><dd>{{ l.description }}
+      {%- if l.dropped %} <span class="muted">Not done: {{ l.dropped | join("; ") }}.</span>{% endif %}</dd></div>
+    {%- endfor %}
+  </dl>
+  <p>The design rules in <code>CLAUDE.md</code>, level by level. Rules 2, 4 and 6 only apply where
+    there are agents for them to govern; at Full, the default, all of them apply.</p>
+  <div class="table-wrap">
+  <table class="help-table">
+    <thead><tr><th scope="col">Rule</th>{% for label in level_labels %}<th scope="col">{{ label }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {%- for rule, marks in rule_marks %}
+      <tr><td>{{ rule }}</td>{% for mark in marks %}<td>{{ mark }}</td>{% endfor %}</tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p>The <strong>security scan</strong> (semgrep by default) is a switch of its own: on at Full,
+    off below it unless you turn it on. At Full the security reviewer checks each hit. Below Full
+    nobody does, so you choose what a hit means: <em>Ask me</em> (the run stops at the first one),
+    <em>Ignore</em> (recorded as minor findings marked <em>ignored by you</em>) or <em>Block</em>
+    (treated like a failing test: the author fixes it and the scan runs again).</p>
+</section>
+
 <section class="help-block" id="steps">
   <h2>The steps</h2>
-  <p>Every run goes through the same steps, in this order. The program running them is ordinary
+  <p>A run at the Full level goes through these steps, in this order (lower levels leave some out: see
+    <a href="#levels">Levels</a>). The program running them is ordinary
     code, not an agent, so no step is ever skipped.</p>
   <ol class="help-steps">
-    <li><strong>SPEC.</strong> The spec writer turns your work item into <code>task.md</code>: what
+    <li><strong>SPEC.</strong> (At Basic and Reviewer, <strong>SOLO</strong> instead of SPEC, TESTS
+      and CODE: one agent writes <code>task.md</code>, the tests and the code in one pass.) The spec writer turns your work item into <code>task.md</code>: what
       to build, as numbered <em>acceptance criteria</em> (AC1, AC2, ...), plus anything unclear as
       <em>open questions</em>. A question marked <code>BLOCKING</code> stops the run here, for you to
       answer: the run shows as <em>needs answers</em>, with a form on its page. Then the same run
@@ -95,6 +149,58 @@
     {%- for name, what in checks %}
     <li><code>{{ name }}</code>: {{ what }}.</li>
     {%- endfor %}
+  </ul>
+</section>
+
+<section class="help-block" id="asks">
+  <h2>When a run asks you</h2>
+  <p>A run stops and asks at the points where a person should decide. It never decides these
+    itself, unless you chose so up front. They show as <em>needs answers</em> or <em>needs a
+    decision</em>, with the choices on the run's page.</p>
+  <ul>
+    <li><strong>Blocking questions</strong> (every level). Answer them, and the same run carries
+      on. Or choose <strong>Bypass</strong>, for one question or all: the agent answers with its
+      best judgement, and its answers are marked <em>agent's best judgement</em> in
+      <code>task.md</code>, the report and this page. Bypass covers only the questions of that
+      stop. After {{ limits.max_rounds_spec }} spec passes the run asks <em>Begin work?</em>:
+      yes, and the agent decides what's left and every later question. The New run dialog also has
+      <em>Don't stop for questions</em>, which bypasses every question from the start. It's
+      rarely the right choice.</li>
+    <li><strong>Checks still failing.</strong> After the pipeline has done what it can on its own,
+      you choose <strong>another fix pass</strong> (with a note for the author, if you like; at
+      most {{ limits.max_fix_passes }} per run) or <strong>take over</strong>: the work is committed
+      to the branch as it is, the working copy is removed, and you finish by hand.</li>
+    <li><strong>Security scan hits</strong> below Full, if you left <em>Ask me</em>: <strong>ignore</strong>
+      or <strong>block</strong>. Your choice holds for the rest of the run, so you're asked at
+      most once.</li>
+    <li><strong>A usage limit.</strong> If a subscription usage limit (the 5-hour or weekly one)
+      or the Console credit balance runs out part-way, the run <strong>pauses</strong> instead of
+      failing, and says which limit it was and when it resets. Add extra usage or credits (or
+      wait for the reset), then press <strong>Try again</strong>: the step that was cut off starts
+      again with its partial work kept. If the limit is still in force it pauses again; nothing
+      retries by itself. Or <strong>finish as is</strong>: nothing is committed, and the work so
+      far stays in the working copy, uncommitted, for you to look at.</li>
+  </ul>
+  <p>Where a run stops, its working copy is left exactly as it was, so what you're deciding about
+    is still there.</p>
+</section>
+
+<section class="help-block" id="logins">
+  <h2>Subscription or Console credits</h2>
+  <p>advpipe talks to Claude through Claude Code, with whatever login Claude Code has. It never
+    asks for, reads or stores a key or token. Which login it is changes what the dollar figures
+    mean:</p>
+  <ul>
+    <li><strong>A Claude subscription.</strong> Nothing is billed per call: the cost shown is an
+      <em>API-equivalent</em> estimate, and the budget still caps it. The limits that matter are
+      your plan's usage windows. advpipe shows the <em>last known</em> usage next to the budget
+      (for example <em>5-hour: 62% used, resets 14:00</em>). Claude reports usage only when it
+      changes, so the figures say how old they are and are never a live gauge.</li>
+    <li><strong>Anthropic Console credits</strong> (an API key). Every call is <strong>real
+      money</strong>. Pages that start or restart work warn you, with the most the run can spend.
+      It's a warning, not a prompt.</li>
+    <li><strong>Not known yet.</strong> advpipe learns the login from a run's first agent call.
+      Until then it says so, and never guesses from silence.</li>
   </ul>
 </section>
 

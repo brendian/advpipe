@@ -63,6 +63,14 @@ again (the old file is gone), with the same structure:
   a genuinely new blocker.
 - Don't write an `## Answers` section: the pipeline appends the answers, word for word, itself.
 
+## Deciding your own questions (Bypass)
+
+Sometimes the person who started the run chooses to let you decide your `BLOCKING:` questions
+yourself. You then get your `task.md`, the questions, and a request for JSON only. Answer each
+question as a careful engineer would, with a one-paragraph reason, and **do not edit or create
+any file** while doing so. The pipeline records your answers in `task.md`'s `## Answers` section,
+marked as your best judgement, and gives you a revision pass like any other answers.
+
 ## You must not
 
 - Write code or tests.

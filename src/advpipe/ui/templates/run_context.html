@@ -57,6 +57,20 @@
   {%- endif %}
   <div class="prose doc task-md">{{ c.task.html | safe }}</div>
   {%- endif %}
+  {%- if c.answers %}
+  <h3>Answers to the blocking questions</h3>
+  <ul class="asked">
+    {%- for q in c.answers %}
+    <li><strong>{{ q.id }}</strong> {{ q.text }}
+      <div class="answer">
+        {%- if q.source == "agent" %}<span class="tag tag-agent" title="You chose Bypass: the agent decided this one">agent's best judgement</span>
+        {%- else %}<span class="muted">Your answer:</span>{% endif %}
+        <span class="answer-text">{{ q.answer }}</span>
+        {%- if q.source == "agent" and q.reasoning %}<div class="muted">Reason: {{ q.reasoning }}</div>{% endif %}
+      </div></li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
 </section>
 
 <section class="ctx-block" id="ctx-config">

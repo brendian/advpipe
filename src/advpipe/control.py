@@ -83,7 +83,8 @@ def cancel_run(repo: Path, run_id: str) -> int:
 def clean_run(repo: Path, run_id: str, *, force: bool = False, logs: bool = False) -> list[str]:
     """Remove a dead run's worktree and branch (and its log directory if ``logs``).
 
-    Refuses complete runs (their branch is the result) and active runs. Refuses a branch with
+    Refuses complete runs (their branch is the result) and active runs, and (without ``force``)
+    the uncommitted work of a run finished as is. Refuses a branch with
     commits no other branch has unless ``force``. Every check runs before anything is deleted.
     Returns what was done, as lines for the user.
     """
@@ -108,6 +109,19 @@ def clean_run(repo: Path, run_id: str, *, force: bool = False, logs: bool = Fals
         (top / ".advpipe" / "worktrees").resolve()
     ):
         raise ControlError(f"worktree {worktree} isn't under .advpipe/worktrees; not touching it")
+    if (
+        state.ended_by == "finish"
+        and not force
+        and worktree is not None
+        and worktree.is_dir()
+        and git(worktree, "status", "--porcelain").strip()
+    ):
+        # A run finished as is keeps its uncommitted work on purpose; cleaning would lose it.
+        raise ControlError(
+            f"run {run_id} was finished as is: its worktree {worktree} has uncommitted changes "
+            "that cleaning up would delete. Look at them with: "
+            f"git -C {worktree} status  Pass --force to delete them anyway."
+        )
     branch = state.branch if state.branch and branch_exists(top, state.branch) else ""
     if branch and not branch.startswith(BRANCH_PREFIX):
         raise ControlError(f"branch {branch} isn't an {BRANCH_PREFIX} branch; not touching it")

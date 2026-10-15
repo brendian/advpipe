@@ -451,3 +451,52 @@ main:focus { outline: none; }
 .asked ul { margin: 0.25rem 0; padding-left: 1.25rem; }
 .asked li { margin-bottom: 0.4rem; }
 .asked .answer-text { white-space: pre-wrap; }
+
+/* ---------------------------------------------------------------- levels and decisions */
+
+.chip-needs_decision, .chip-paused { color: var(--attention); }
+.chip-handed_over, .chip-ended, .chip-finished { color: var(--stopped); }
+.chip-level { color: var(--muted); font-size: 0.8rem; cursor: default; }
+.tag-agent { color: var(--attention); border-color: var(--attention); }
+
+.checking { display: flex; flex-direction: column; gap: 0.75rem; }
+.level-slider { width: 100%; max-width: 36rem; }
+.level-slider input[type="range"] { width: 100%; }
+.level-ticks {
+  display: flex; justify-content: space-between; list-style: none; margin: 0; padding: 0;
+  color: var(--muted); font-size: 0.85rem;
+}
+.level-ticks li.on { color: var(--fg); font-weight: 600; }
+.choice-row { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: baseline; }
+.choice-row .choice { margin-right: 0.75rem; }
+
+.level-card { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-left: 3px solid var(--border); }
+.level-card h3 { margin: 0 0 0.25rem; }
+.level-card p, .level-card ul { margin: 0.25rem 0; }
+.level-card .not-done { color: var(--muted); }
+
+details.not-done { margin: 0.5rem 0; color: var(--muted); }
+details.not-done ul { margin: 0.25rem 0 0; }
+
+.decision-callout .explanation { white-space: pre-wrap; }
+.decision-form { display: flex; flex-direction: column; gap: 0.75rem; align-items: flex-start; }
+.decision-form .field { width: 100%; }
+.decision-form .choices { display: flex; flex-direction: column; gap: 0.5rem; }
+.decision-form .choice-option { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: baseline; }
+.decision-form #decision-result { width: 100%; }
+.answer-form .form-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+
+
+/* ---------------------------------------------------------------- login and usage */
+
+.usage { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; align-items: center; margin: 0.5rem 0; }
+.chip-login { color: var(--muted); cursor: default; font-size: 0.8rem; }
+.chip-login-console { color: var(--attention); }
+.usage-meter { display: inline-flex; gap: 0.4rem; align-items: center; font-size: 0.85rem; }
+.usage-label { font-weight: 600; }
+.usage-meter meter { width: 5rem; height: 0.7rem; }
+.usage-allowed_warning .usage-text { color: var(--attention); }
+.usage-rejected .usage-text { color: var(--danger); font-weight: 600; }
+.usage-stale { color: var(--muted); }
+.usage-note { font-size: 0.85rem; }
+.console-warning { margin: 0.5rem 0; font-weight: 600; }

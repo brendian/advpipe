@@ -9,8 +9,10 @@
   <dl class="run-meta">
     <div><dt>Status</dt><dd><span class="chip chip-{{ d.status }}" title="{{ d.info.help }}">{{ d.info.icon }} {{ d.info.label }}</span></dd></div>
     <div><dt>Stage</dt><dd>{{ d.stage }}</dd></div>
-    <div><dt>Cost</dt><dd class="cost">
-      ${{ "%.2f" | format(state.cost_usd) }}
+    <div><dt>Level</dt><dd><span class="chip chip-level" title="How much checking this run gets">{{ d.level_label }}</span>
+      <span class="muted">· security scan {{ d.scan_text }}</span></dd></div>
+    <div><dt>Cost</dt><dd class="cost" title="{{ d.usage.cost_label | capitalize }}">
+      ${{ "%.2f" | format(state.cost_usd) }}{% if d.usage.known %}<span class="muted"> {{ d.usage.cost_label }}</span>{% endif %}
       {%- if d.budget_usd %}<span class="muted"> of ${{ "%.2f" | format(d.budget_usd) }}</span>
       <meter min="0" max="{{ d.budget_usd }}" value="{{ [state.cost_usd, d.budget_usd] | min }}" high="{{ d.budget_usd * 0.8 }}" title="Cost against the run's budget">{{ "%.0f" | format(100 * state.cost_usd / d.budget_usd) }}%</meter>
       {%- endif %}
@@ -23,6 +25,18 @@
     <div class="wide"><dt>Run id</dt><dd><code>{{ d.run_id }}</code></dd></div>
   </dl>
   <p class="status-help">{{ d.info.help }}</p>
+  {%- if d.usage.known %}
+  {{ m.usage_line(d.usage) }}
+  {%- endif %}
+  {%- if d.dropped %}
+  <details class="not-done" id="not-done">
+    <summary>Not done at this level ({{ d.agents }} agent{{ "s" if d.agents != 1 }})</summary>
+    <ul>{% for line in d.dropped %}<li>{{ line }}</li>{% endfor %}</ul>
+  </details>
+  {%- endif %}
+  {%- if state.bypass_questions %}
+  <p class="warning">Bypass is on for this run: the agent answers blocking questions itself, without asking you. Its answers are marked in <code>task.md</code> and the report.</p>
+  {%- endif %}
 
   {%- if d.actions %}
   {#- Only the actions valid for this status; the server checks again. Problems come back
@@ -35,6 +49,7 @@
     {%- if "resume" in d.actions %}
     {%- set over = d.status == "budget_exceeded" %}
     <form class="inline-form" hx-post="/runs/{{ d.run_id }}/resume" hx-target="#action-result">
+      {{ m.console_box(d.usage, d.budget_usd) }}
       <label>{{ "New budget" if over else "Budget" }} $<input name="budget" inputmode="decimal" size="7" maxlength="20" autocomplete="off"
              {%- if over %} value="{{ '%.0f' | format(d.suggested_budget) }}" required{% elif d.budget_usd %} placeholder="{{ '%.2f' | format(d.budget_usd) }}"{% endif %}></label>
       <button type="submit" class="button primary">Resume</button>
@@ -50,23 +65,80 @@
   </section>
   {%- endif %}
 
-  {%- if d.questions %}
-  {#- Blocking spec questions: answering them resumes this same run (`advpipe answer --detach`).
-      Refusals come back into #answer-result (409 or 422), and the typed answers stay put. #}
+  {%- if d.decision_view %}
+  {#- The run stopped at a decision point: it waits for you to choose. The choice goes to
+      `advpipe decide --detach`; a refusal comes back into #decision-result (409 or 422). #}
+  {%- set v = d.decision_view %}
+  <section class="callout decision-callout" id="decision">
+    <h2>{{ v.title }}</h2>
+    <p class="explanation">{{ v.decision.explanation }}</p>
+    {%- if v.decision.kind == "usage_limit" %}
+    <p><a class="button" href="{{ v.add_url }}" target="_blank" rel="noopener noreferrer">{{ v.add_label }}</a>
+      <small class="muted">opens in a new tab. {{ v.retry_warning }}</small></p>
+    {%- endif %}
+    {{ m.console_box(d.usage, d.budget_usd) }}
+    {%- if v.decision.kind == "spec_cap" %}
+    <ul class="asked">
+      {%- for q in v.pending %}<li><strong>{{ q.id }}</strong> {{ q.text }}</li>{% endfor %}
+    </ul>
+    {%- endif %}
+    {%- for f in v.decision.findings %}
+    {{ m.finding_card(f) }}
+    {%- endfor %}
+    <form class="decision-form" method="post" action="/runs/{{ d.run_id }}/decide" hx-post="/runs/{{ d.run_id }}/decide" hx-target="#decision-result">
+      {%- if v.decision.kind == "red_checks" %}
+      <div class="field">
+        <label for="decide-note">A note for the author <span class="muted">(optional, passed along as you write it)</span></label>
+        <textarea id="decide-note" class="short" name="note" rows="3" maxlength="{{ d.max_decision_note_chars }}"
+                  placeholder="e.g. the rounding should match invoices.py"></textarea>
+        <small class="muted">
+          {%- if v.can_fix %}Fix pass {{ v.fix_pass }} of {{ v.max_fix_passes }}.{% else %}All {{ v.max_fix_passes }} fix passes are used: take over, or start a new run.{% endif %}</small>
+      </div>
+      {%- endif %}
+      <div class="choices">
+        {%- for c in v.choices %}
+        <div class="choice-option">
+          {%- if c.confirm %}
+          <a class="button" href="/runs/{{ d.run_id }}/decide/{{ c.value }}">{{ c.label }}…</a>
+          {%- else %}
+          <button type="submit" name="choice" value="{{ c.value }}" class="button{{ " primary" if c.primary }}"
+                  {%- if c.value == "fix" and not v.can_fix %} disabled{% endif %}>{{ c.label }}</button>
+          {%- endif %}
+          <small class="muted">{{ c.help }}</small>
+        </div>
+        {%- endfor %}
+      </div>
+      <small class="muted">It has spent ${{ "%.2f" | format(state.cost_usd) }}{% if d.budget_usd %} of its ${{ "%.2f" | format(d.budget_usd) }} budget{% endif %}{% if d.usage.login == "subscription" %} (API-equivalent: a subscription isn't billed per call){% endif %}. Carrying on happens in the background.</small>
+      <div id="decision-result" aria-live="polite"></div>
+    </form>
+  </section>
+  {%- elif d.questions %}
+  {#- Blocking spec questions: answering them (or Bypass: the agent decides) resumes this same
+      run (`advpipe answer --detach`). Refusals come back into #answer-result (409 or 422), and
+      the typed answers stay put. #}
   <section class="callout answer-callout">
-    <h2>Answer the spec's questions</h2>
-    <p>The spec writer stopped on {{ "this question" if d.questions | length == 1 else "these questions" }}: it shouldn't guess the answer.
-      Answer {{ "it" if d.questions | length == 1 else "every one" }}, and the run carries on: the spec writer revises <code>task.md</code> with your
-      answers (one more spec pass, so a little more cost), then tests, code and review run as usual.
-      Your answers go into <code>task.md</code> word for word, for every later agent to read.</p>
-    <form class="answer-form" hx-post="/runs/{{ d.run_id }}/answer" hx-target="#answer-result">
+    <h2>{% if d.asker == "solo agent" %}Answer the solo agent's questions{% else %}Answer the spec's questions{% endif %}</h2>
+    <p>The {{ d.asker }} stopped on {{ "this question" if d.questions | length == 1 else "these questions" }}: it shouldn't guess the answer.
+      Answer {{ "it" if d.questions | length == 1 else "every one" }}, and the run carries on: the {{ d.asker }} revises <code>task.md</code> with your
+      answers (one more pass, so a little more cost), then the rest of the steps run as usual.
+      Your answers go into <code>task.md</code> word for word, for every later agent to read.
+      Or <strong>let the agent decide</strong>, for a question or for all of them: it uses its best judgement, and says so
+      in <code>task.md</code> and the report. That covers only these questions: if the revision asks new ones, you're asked again.</p>
+    {{ m.console_box(d.usage, d.budget_usd) }}
+    <form class="answer-form" method="post" action="/runs/{{ d.run_id }}/answer" hx-post="/runs/{{ d.run_id }}/answer" hx-target="#answer-result">
       {%- for q in d.questions %}
       <div class="field">
         <label for="answer-{{ q.id }}"><strong>{{ q.id }}</strong> {{ q.text }}</label>
-        <textarea id="answer-{{ q.id }}" class="short" name="answer_{{ q.id }}" rows="3" required maxlength="{{ d.max_answer_chars }}">{{ q.answer }}</textarea>
+        <textarea id="answer-{{ q.id }}" class="short" name="answer_{{ q.id }}" rows="3" maxlength="{{ d.max_answer_chars }}">{{ q.answer }}</textarea>
+        <label class="choice"><input type="checkbox" name="bypass_{{ q.id }}" value="yes"{% if q.bypassed %} checked{% endif %}>
+          Let the agent decide {{ q.id }} <span class="muted">(ignores what's typed above)</span></label>
       </div>
       {%- endfor %}
-      <button type="submit" class="button primary">Save answers and continue</button>
+      <div class="form-actions">
+        <button type="submit" class="button primary">Save answers and continue</button>
+        <button type="submit" class="button" name="bypass_all" value="yes" formnovalidate
+                title="The agent answers every question here, whatever is typed above">Bypass all and continue</button>
+      </div>
       <small class="muted">It has spent ${{ "%.2f" | format(state.cost_usd) }}{% if d.budget_usd %} of its ${{ "%.2f" | format(d.budget_usd) }} budget{% endif %}. It continues in the background.</small>
       <div id="answer-result" aria-live="polite"></div>
     </form>

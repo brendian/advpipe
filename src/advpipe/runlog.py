@@ -13,7 +13,9 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from advpipe.config import Config
-from advpipe.models import Finding, RunState
+from advpipe.levels import LEVEL_ORDER, dropped_safeguards, level_number, roles_for, scan_on
+from advpipe.models import DECISION_CHOICES, Finding, Level, RunState, Status
+from advpipe.usage import LOGIN_LABELS, describe_all
 
 EVENTS_FILE = "events.jsonl"
 # Run ids are path components: letters, digits, '.', '_' and '-', not starting with '.' or '-'.
@@ -119,6 +121,9 @@ class RunLog:
     def write_state(self, state: RunState) -> None:
         state.updated_at = datetime.now(UTC)
         self.write_text("run.json", state.model_dump_json(indent=2))
+        for n, d in enumerate(state.decisions, 1):
+            # Each decision as asked and as decided (docs/LEVELS_PLAN.md §3.12).
+            self.write_text(f"decisions/{n}.json", d.model_dump_json(indent=2))
 
     def write_text(self, rel: str, text: str) -> None:
         """Write via a temporary file and rename, so a reader (`advpipe status`, the web UI)
@@ -193,12 +198,116 @@ def _questions(state: RunState, waiting: bool) -> list[str]:
     lines = ["## Questions and answers"]
     for q in state.questions:
         lines.append(f"- **{q.id}** (spec pass {q.asked_in}): {q.text}")
-        if q.answer:
+        if q.answer and q.source == "agent":
+            why = "you chose Bypass up front" if state.bypass_questions else "you chose Bypass"
+            answer = q.answer.strip().replace("\n", "\n    ")
+            lines.append(f"  - **Answer (agent's best judgement, {why}):** {answer}")
+            if q.reasoning.strip():
+                lines.append(f"  - **Reason:** {' '.join(q.reasoning.split())}")
+        elif q.answer:
             answer = q.answer.strip().replace("\n", "\n    ")
             lines.append(f"  - **Answer:** {answer}")
+        elif q.bypassed:
+            lines.append("  - (Bypass: the agent decides when the run resumes)")
         else:
             lines.append("  - (not answered" + (" yet)" if waiting else ")"))
     return [*lines, ""]
+
+
+def scan_policy_line(state: RunState) -> str:
+    """What happens to security scan hits below full, once that isn't "ask any more"; empty when
+    there's nothing to say. Says whether the person chose up front or at a decision point."""
+    if state.level is Level.FULL or not scan_on(state) or state.scan_policy == "ask":
+        return ""
+    asked = any(d.kind == "scan_hits" and d.choice for d in state.decisions)
+    how = "your choice" if asked else "chosen up front"
+    what = (
+        'ignored (recorded as minor findings, marked "ignored by you")'
+        if state.scan_policy == "ignore"
+        else "treated like failing checks"
+    )
+    return f"security scan hits {what}, {how}"
+
+
+def _decisions(state: RunState) -> list[str]:
+    """Every decision point, in order: what was asked, and what the person chose."""
+    if not state.decisions:
+        return []
+    lines = ["## Decisions"]
+    for n, d in enumerate(state.decisions, 1):
+        lines.append(f"- **{n}. {d.kind}** at {d.stage.value}: {' '.join(d.explanation.split())}")
+        if d.findings:
+            lines.append(f"  - {len(d.findings)} finding(s): {', '.join(f.id for f in d.findings)}")
+        if d.choice:
+            lines.append(
+                f"  - **You chose:** {d.choice}" + ("" if d.applied else " (not acted on yet)")
+            )
+            if d.note.strip():
+                note = d.note.strip().replace("\n", "\n    ")
+                lines.append(f"  - **Your note:** {note}")
+        else:
+            choices = " | ".join(DECISION_CHOICES[d.kind])
+            lines.append(f"  - (waiting for you: advpipe decide {state.run_id} {choices})")
+    last = state.decisions[-1]
+    if state.ended_by == "takeover":
+        lines.append(
+            f"- Handed over to you at {last.stage.value}; the branch has the work as it was."
+        )
+    elif state.ended_by == "stop":
+        lines.append(f"- Stopped at your choice at {last.stage.value}; nothing was committed.")
+    elif state.ended_by == "finish":
+        where = f" in `{state.worktree}`" if state.worktree else ""
+        lines.append(
+            f"- Finished as is at {last.stage.value}; the uncommitted work is{where or ' there'}."
+        )
+    if state.fix_passes:
+        lines.append(f"- Fix passes you asked for: {state.fix_passes}")
+    return [*lines, ""]
+
+
+def _login(state: RunState) -> list[str]:
+    """Which login the agents ran under and the last known usage; empty when nothing was
+    reported, so a run that never learned its login reads as it always did."""
+    if state.auth == "unknown" and not state.rate_limits:
+        return []
+    lines = ["## Login and usage", f"- **Login:** {LOGIN_LABELS[state.auth]}"]
+    if state.rate_limits:
+        lines.append(
+            "- **Usage, last known:** " + "; ".join(describe_all(state.rate_limits)) + ". Claude "
+            "reports usage only when it changes, so this may be out of date."
+        )
+    if state.auth == "subscription":
+        lines.append(
+            "- The dollar figures are API-equivalent estimates: a subscription login isn't "
+            "billed per call. The budget still caps them."
+        )
+    elif state.auth == "console":
+        lines.append(
+            "- Every call is billed to your Console credits, so the dollar figures are real."
+        )
+    return [*lines, ""]
+
+
+def _level(state: RunState) -> list[str]:
+    """The run's level and what it leaves out. Just the name for full with the scan on."""
+    scan = scan_on(state)
+    up_front = (
+        ["- **Blocking questions:** bypassed up front; the agent answers them itself"]
+        if state.bypass_questions
+        else []
+    )
+    if line := scan_policy_line(state):
+        up_front.append(f"- **Scan hits:** {line}")
+    if state.level is Level.FULL and scan:
+        return [f"- **Level:** {state.level.value}", *up_front]
+    agents = len(roles_for(state.level))
+    lines = [
+        f"- **Level:** {state.level.value} ({level_number(state.level)} of {len(LEVEL_ORDER)}): "
+        f"{agents} agent{'s' if agents != 1 else ''} · security scan {'on' if scan else 'off'}",
+        "- **Not done at this level:**",
+    ]
+    lines += [f"  - {line}" for line in dropped_safeguards(state.level, scan)]
+    return lines + up_front
 
 
 def render_report(state: RunState, *, waiting_on_answers: bool = False) -> str:
@@ -211,10 +320,15 @@ def render_report(state: RunState, *, waiting_on_answers: bool = False) -> str:
             "The spec has blocking questions. Answer them, and the run continues: "
             f"advpipe answer {state.run_id}"
         )
+    d = state.decision
+    if d is not None and state.status is Status.NEEDS_HUMAN and not d.choice and not state.ended_by:
+        choices = " | ".join(DECISION_CHOICES[d.kind])
+        notes.append(f"{d.explanation} Decide with: advpipe decide {state.run_id} {choices}")
     lines = [
         f"# advpipe run {state.run_id}",
         "",
         f"- **Status:** {state.status.value}",
+        *_level(state),
         f"- **Work item:** {state.work_item}",
         f"- **Branch:** `{state.branch}`"
         + (
@@ -241,7 +355,9 @@ def render_report(state: RunState, *, waiting_on_answers: bool = False) -> str:
         "## Cost by stage",
         *_cost_table(state),
         "",
+        *_login(state),
         *_questions(state, waiting_on_answers),
+        *_decisions(state),
         "## Notes",
         *([f"- {n}" for n in notes] or ["- None"]),
     ]

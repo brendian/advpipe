@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from advpipe.runlog import RUN_ID_RE
+from advpipe.ui import usage_view
 from advpipe.ui.actions import VALID
 from advpipe.ui.runs import FILTERS, STATUSES, load_runs
 from advpipe.ui.state import ui_config
@@ -32,6 +33,7 @@ def _render(request: Request, template: str, show: str, removed: str = "") -> HT
             "total": len(runs.rows),
             "unreadable": runs.unreadable,
             "statuses": STATUSES,
+            "usage": usage_view.for_repo(ui.repo),
             "refresh_seconds": REFRESH_SECONDS,
             "repo": str(ui.repo),
             "repo_arg": shlex.quote(str(ui.repo)),
